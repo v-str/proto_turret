@@ -1,0 +1,10 @@
+build/
+*.o
+*.d
+*.lst
+*.elf
+*.hex
+*.bin
+*.map
+.mxproject
+.gigacode/

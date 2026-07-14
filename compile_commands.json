@@ -1,0 +1,7 @@
+[
+  {
+    "directory": "/home/user/Ros2/proto_turret",
+    "command": "arm-none-eabi-gcc -c -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard -DUSE_NUCLEO_64 -DUSE_HAL_DRIVER -DSTM32F446xx -ICore/Inc -IDrivers/STM32F4xx_HAL_Driver/Inc -IDrivers/STM32F4xx_HAL_Driver/Inc/Legacy -IMiddlewares/Third_Party/FreeRTOS/Source/include -IMiddlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F -IDrivers/BSP/STM32F4xx-Nucleo -IDrivers/CMSIS/Device/ST/STM32F4xx/Include -IDrivers/CMSIS/Include -IMiddlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -Og -Wall -fdata-sections -ffunction-sections -o build/main.o Core/Src/main.c",
+    "file": "Core/Src/main.c"
+  }
+]
