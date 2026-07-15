@@ -1,6 +1,15 @@
 {
     "cSpell.language": "en,ru",
     "cSpell.words": [
+        "microros",
+        "cubemx",
+        "rcutils",
+        "rclc",
+        "rosidl",
+        "microxrcedds",
+        "rmw",
+        "uxr",
+        "ucdr",
         "stm32f4xx",
         "stm32f446xx",
         "stm32f446re",
@@ -291,5 +300,8 @@
         "/HAL_[A-Z_]+/g",
         "/LL_[A-Z_]+/g",
         "/__[A-Z_]+/g"
-    ]
+    ],
+    "files.associations": {
+      "error_handling.h": "c"
+    }
 }
