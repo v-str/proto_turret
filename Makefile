@@ -149,7 +149,8 @@ C_INCLUDES =  \
 -IMiddlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F \
 -IDrivers/BSP/STM32F4xx-Nucleo \
 -IDrivers/CMSIS/Device/ST/STM32F4xx/Include \
--IDrivers/CMSIS/Include
+-IDrivers/CMSIS/Include \
+-Imicro_ros_stm32cubemx_utils/microros_static_library/libmicroros/microros_include
 
 
 # compile gcc flags
@@ -173,7 +174,9 @@ CFLAGS += -MMD -MP -MF"$(@:%.o=%.d)"
 LDSCRIPT = STM32F446xx_FLASH.ld
 
 # libraries
-LIBS = -lc -lm -lnosys 
+# LIBS = -lc -lm -lnosys
+LIBS = -lc -lm -lnosys -Lmicro_ros_stm32cubemx_utils/microros_static_library/libmicroros -lmicroros
+
 LIBDIR = 
 LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections
 
