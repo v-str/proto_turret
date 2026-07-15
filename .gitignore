@@ -8,3 +8,10 @@ build/
 *.map
 .mxproject
 .gigacode/
+
+# micro-ROS library build artifacts
+microros_static_library/libmicroros/
+micro_ros_stm32cubemx_utils/microros_static_library/libmicroros/
+
+# embedded git repo (tracked as subproject on GitHub)
+micro_ros_stm32cubemx_utils/
