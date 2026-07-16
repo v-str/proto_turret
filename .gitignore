@@ -15,3 +15,4 @@ micro_ros_stm32cubemx_utils/microros_static_library/libmicroros/
 
 # ignore all upstream files in micro_ros_stm32cubemx_utils except our modifications
 micro_ros_stm32cubemx_utils/*
+AGENTS_CONTEXT.md
