@@ -46,6 +46,22 @@ else
     echo "=== Зависимости уже скачаны, пропускаем ==="
 fi
 
+######## Patch UXR config ########
+# Increase session connection interval to 60s so it doesn't re-establish
+# during the micro-ROS initialization sequence (rclc_support_init, etc.)
+# The default 1s interval causes constant session re-establishment which
+# breaks entity registration — the client returns OBJK_INVALID on GET_INFO.
+UCFG_IN="firmware/mcu_ws/eProsima/Micro-XRCE-DDS-Client/include/uxr/client/config.h.in"
+if [ -f "$UCFG_IN" ]; then
+    echo "Patching $UCFG_IN ..."
+    sed -i 's/@UCLIENT_MIN_SESSION_CONNECTION_INTERVAL@/60000/' "$UCFG_IN"
+fi
+UCFG="firmware/mcu_ws/eProsima/Micro-XRCE-DDS-Client/include/uxr/client/config.h"
+if [ -f "$UCFG" ]; then
+    echo "Patching $UCFG ..."
+    sed -i 's/#define UXR_CONFIG_MIN_SESSION_CONNECTION_INTERVAL[[:space:]]*1000/#define UXR_CONFIG_MIN_SESSION_CONNECTION_INTERVAL    60000/' "$UCFG"
+fi
+
 ######## Trying to retrieve CFLAGS ########
 pushd /project > /dev/null
 export RET_CFLAGS=$(make print_cflags)

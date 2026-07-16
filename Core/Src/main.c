@@ -47,23 +47,28 @@
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
+
+/* Button state */
+#define BUTTON_RELEASED 0U
+#define BUTTON_PRESSED 1U
 /* USER CODE BEGIN PM */
 
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-UART_HandleTypeDef huart2;
-DMA_HandleTypeDef hdma_usart2_tx;
-DMA_HandleTypeDef hdma_usart2_rx;
 
-// commented PCD_HandleTypeDef hpcd_USB_OTG_FS;
+__IO uint32_t BspButtonState = BUTTON_RELEASED;
+UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart2_rx;
+DMA_HandleTypeDef hdma_usart2_tx;
 
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
     .name = "defaultTask",
+    .stack_size = 3000 * 4,
     .priority = (osPriority_t)osPriorityNormal,
-    .stack_size = 3000 * 4};
+};
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -73,7 +78,6 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
-// commented static void MX_USB_OTG_FS_PCD_Init(void);
 void StartDefaultTask(void* argument);
 
 /* USER CODE BEGIN PFP */
@@ -135,19 +139,13 @@ int main(void) {
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-
   MX_DMA_Init();
-
   MX_USART2_UART_Init();
-
-  // commented MX_USB_OTG_FS_PCD_Init();
-
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
 
   /* Init scheduler */
-
   osKernelInitialize();
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -179,10 +177,25 @@ int main(void) {
   /* add events, ... */
   /* USER CODE END RTOS_EVENTS */
 
+  /* Initialize leds */
+  BSP_LED_Init(LED2);
+
+  /* Initialize USER push-button, will be used to trigger an interrupt each time
+   * it's pressed.*/
+  BSP_PB_Init(BUTTON_USER, BUTTON_MODE_EXTI);
+
+  /* USER CODE BEGIN BSP */
+
+  /* -- Sample board code to switch on leds ---- */
+  BSP_LED_On(LED2);
+
+  /* USER CODE END BSP */
+
   /* Start scheduler */
   osKernelStart();
 
   /* We should never get here as control is now taken by the scheduler */
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1) {
@@ -205,11 +218,13 @@ void SystemClock_Config(void) {
    */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+
   /** Initializes the RCC Oscillators according to the specified parameters
    * in the RCC_OscInitTypeDef structure.
    */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 16;
@@ -220,14 +235,15 @@ void SystemClock_Config(void) {
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
   }
+
   /** Initializes the CPU, AHB and APB buses clocks
    */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
                                 RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
     Error_Handler();
@@ -264,38 +280,6 @@ static void MX_USART2_UART_Init(void) {
 }
 
 /**
- * @brief USB_OTG_FS Initialization Function
- * @param None
- * @retval None
- */
-// commented
-// static void MX_USB_OTG_FS_PCD_Init(void) {
-//   /* USER CODE BEGIN USB_OTG_FS_Init 0 */
-
-//   /* USER CODE END USB_OTG_FS_Init 0 */
-
-//   /* USER CODE BEGIN USB_OTG_FS_Init 1 */
-
-//   /* USER CODE END USB_OTG_FS_Init 1 */
-//   hpcd_USB_OTG_FS.Instance = USB_OTG_FS;
-//   hpcd_USB_OTG_FS.Init.dev_endpoints = 6;
-//   hpcd_USB_OTG_FS.Init.speed = PCD_SPEED_FULL;
-//   hpcd_USB_OTG_FS.Init.dma_enable = DISABLE;
-//   hpcd_USB_OTG_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
-//   hpcd_USB_OTG_FS.Init.Sof_enable = ENABLE;
-//   hpcd_USB_OTG_FS.Init.low_power_enable = DISABLE;
-//   hpcd_USB_OTG_FS.Init.lpm_enable = DISABLE;
-//   hpcd_USB_OTG_FS.Init.vbus_sensing_enable = ENABLE;
-//   hpcd_USB_OTG_FS.Init.use_dedicated_ep1 = DISABLE;
-//   if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK) {
-//     Error_Handler();
-//   }
-//   /* USER CODE BEGIN USB_OTG_FS_Init 2 */
-
-//   /* USER CODE END USB_OTG_FS_Init 2 */
-// }
-
-/**
  * Enable DMA controller clock
  */
 static void MX_DMA_Init(void) {
@@ -303,10 +287,10 @@ static void MX_DMA_Init(void) {
   __HAL_RCC_DMA1_CLK_ENABLE();
 
   /* DMA interrupt init */
-  /* DMA1_Stream1_IRQn interrupt configuration */
+  /* DMA1_Stream5_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
-  /* DMA1_Stream3_IRQn interrupt configuration */
+  /* DMA1_Stream6_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
 }
@@ -317,54 +301,19 @@ static void MX_DMA_Init(void) {
  * @retval None
  */
 static void MX_GPIO_Init(void) {
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+
+  /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOG_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LD1_Pin | LD3_Pin | LD2_Pin, GPIO_PIN_RESET);
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin,
-                    GPIO_PIN_RESET);
-
-  /*Configure GPIO pin : USER_Btn_Pin */
-  GPIO_InitStruct.Pin = USER_Btn_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(USER_Btn_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : LD1_Pin LD3_Pin LD2_Pin */
-  // GPIO_InitStruct.Pin = LD1_Pin | LD3_Pin | LD2_Pin;
-  // GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  // GPIO_InitStruct.Pull = GPIO_NOPULL;
-  // GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  // HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : USB_PowerSwitchOn_Pin */
-  GPIO_InitStruct.Pin = USB_PowerSwitchOn_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(USB_PowerSwitchOn_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : USB_OverCurrent_Pin */
-  GPIO_InitStruct.Pin = USB_OverCurrent_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(USB_OverCurrent_GPIO_Port, &GPIO_InitStruct);
-
-  GPIO_InitStruct.Pin = LD2_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -394,7 +343,7 @@ void StartDefaultTask(void* argument) {
 
   // micro-ROS configuration
 
-  rmw_uros_set_custom_transport(false, (void*)&huart2, cubemx_transport_open,
+  rmw_uros_set_custom_transport(true, (void*)&huart2, cubemx_transport_open,
                                 cubemx_transport_close, cubemx_transport_write,
                                 cubemx_transport_read);
 
@@ -462,11 +411,12 @@ void StartDefaultTask(void* argument) {
     ret = rcl_publish(&publisher, &msg, NULL);
     if (ret != RCL_RET_OK) {
       // printf("Error publishing (line %d)\n", __LINE__);
-      // led_blink(1);
+      led_blink(1);
+      osDelay(1000);
     }
 
     msg.data++;
-    osDelay(300);
+    osDelay(10);
   }
   /* USER CODE END 5 */
 }
@@ -483,12 +433,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
   /* USER CODE BEGIN Callback 0 */
 
   /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM2) {
+  if (htim->Instance == TIM1) {
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
 
   /* USER CODE END Callback 1 */
+}
+
+/**
+ * @brief EXTI line detection callbacks
+ * @param GPIO_Pin: Specifies the pins connected EXTI line
+ * @retval None
+ */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+  if (GPIO_Pin == USER_BUTTON_PIN) {
+    BspButtonState = BUTTON_PRESSED;
+  }
 }
 
 /**
@@ -503,7 +464,6 @@ void Error_Handler(void) {
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
 #ifdef USE_FULL_ASSERT
 /**
  * @brief  Reports the name of the source file and the source line number
@@ -520,5 +480,3 @@ void assert_failed(uint8_t* file, uint32_t line) {
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
-
-/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
