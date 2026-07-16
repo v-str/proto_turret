@@ -13,5 +13,5 @@ build/
 microros_static_library/libmicroros/
 micro_ros_stm32cubemx_utils/microros_static_library/libmicroros/
 
-# embedded .git inside micro_ros_stm32cubemx_utils
-micro_ros_stm32cubemx_utils/.git/
+# ignore all upstream files in micro_ros_stm32cubemx_utils except our modifications
+micro_ros_stm32cubemx_utils/*

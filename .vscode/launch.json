@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "STM32 Debug (OpenOCD)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "servertype": "openocd",
+            "gdbPath": "/usr/bin/gdb-multiarch",
+            "configFiles": ["board/st_nucleo_f4.cfg"],
+            "executable": "${workspaceRoot}/build/proto_turret.elf",
+            "device": "STM32F446RE",
+            "runToMain": true,
+            "showDevDebugOutput": "none"
+        }
+    ]
+}

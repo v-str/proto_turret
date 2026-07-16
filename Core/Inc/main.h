@@ -71,13 +71,13 @@ void Error_Handler(void);
 #define SWO_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
-/* --- Custom pin defines (verify against your schematic) --- */
-#define LD1_Pin                   GPIO_PIN_0
-#define LD1_GPIO_Port             GPIOB
-#define LD2_Pin                   GPIO_PIN_7
-#define LD2_GPIO_Port             GPIOB
-#define LD3_Pin                   GPIO_PIN_14
-#define LD3_GPIO_Port             GPIOB
+/* --- User LED (Nucleo-F446RE: LD2 on PA5) --- */
+#define LD1_Pin                   LED2_PIN
+#define LD1_GPIO_Port             LED2_GPIO_PORT
+#define LD2_Pin                   LED2_PIN
+#define LD2_GPIO_Port             LED2_GPIO_PORT
+#define LD3_Pin                   LED2_PIN
+#define LD3_GPIO_Port             LED2_GPIO_PORT
 
 #define USER_Btn_Pin              USER_BUTTON_PIN
 #define USER_Btn_GPIO_Port        USER_BUTTON_GPIO_PORT
