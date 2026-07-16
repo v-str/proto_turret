@@ -12,24 +12,26 @@
                 "${workspaceFolder}/Drivers/BSP/STM32F4xx-Nucleo",
                 "${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
                 "${workspaceFolder}/Drivers/CMSIS/Include",
-                "${workspaceFolder}/microros_static_library/libmicroros/microros_include"
+                "${workspaceFolder}/micro_ros_stm32cubemx_utils/microros_static_library/libmicroros/microros_include"
             ],
             "defines": [
                 "USE_HAL_DRIVER",
                 "USE_NUCLEO_64",
                 "STM32F446xx",
-                "RMW_UXRCE_TRANSPORT_CUSTOM"
+                "RMW_UXRCE_TRANSPORT_CUSTOM",
+                "HAL_PCD_MODULE_ENABLED"
             ],
             "compilerPath": "/usr/bin/arm-none-eabi-gcc",
             "cStandard": "c11",
             "cppStandard": "c++14",
             "intelliSenseMode": "gcc-arm",
-            "browse": {
+                    "browse": {
                 "path": [
                     "${workspaceFolder}",
                     "${workspaceFolder}/Drivers/CMSIS",
                     "${workspaceFolder}/Drivers/STM32F4xx_HAL_Driver",
-                    "${workspaceFolder}/Drivers/BSP"
+                    "${workspaceFolder}/Drivers/BSP",
+                    "${workspaceFolder}/micro_ros_stm32cubemx_utils/microros_static_library/libmicroros"
                 ],
                 "limitSymbolsToIncludedHeaders": true
             }

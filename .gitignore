@@ -13,5 +13,5 @@ build/
 microros_static_library/libmicroros/
 micro_ros_stm32cubemx_utils/microros_static_library/libmicroros/
 
-# embedded git repo (tracked as subproject on GitHub)
-micro_ros_stm32cubemx_utils/
+# embedded .git inside micro_ros_stm32cubemx_utils
+micro_ros_stm32cubemx_utils/.git/

@@ -183,6 +183,10 @@ LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BU
 # default action: build all
 all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
 
+# print compiler flags (used by micro-ROS library build)
+print_cflags:
+	@echo $(MCU) $(OPT)
+
 
 #######################################
 # build the application
