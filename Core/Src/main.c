@@ -24,6 +24,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <proto_turret_interfaces/msg/turret_command.h>
 #include <rcl/error_handling.h>
 #include <rcl/rcl.h>
 #include <rclc/executor.h>
@@ -79,6 +80,19 @@ const osThreadAttr_t ros2TaskExecutor_attributes = {
 };
 /* USER CODE BEGIN PV */
 
+// Очередь: Reader → Executor (TurretCommand)
+osMessageQueueId_t cmdQueueHandle;
+
+// Глобальные объекты micro-ROS (инициализация в Ros2Init)
+rcl_publisher_t ros2_publisher;  // издатель Int32 на /proto_turret_publisher
+rcl_subscription_t ros2_subscriber;  // подписчик TurretCommand на /cmd_turret
+rclc_support_t ros2_support;         // init-options
+rcl_allocator_t ros2_allocator;      // аллокатор
+rcl_node_t ros2_node;                // нода "proto_turret_node"
+rclc_executor_t ros2_executor;       // исполнитель (spin_some)
+std_msgs__msg__Int32 ros2_msg;       // сообщение для публикации
+proto_turret_interfaces__msg__TurretCommand ros2_cmd_msg;  // входящая команда
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -90,7 +104,7 @@ void Ros2TaskReader(void* argument);
 void Ros2TaskExecutor(void* argument);
 
 /* USER CODE BEGIN PFP */
-
+bool Ros2Init(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -170,7 +184,9 @@ int main(void) {
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
+  // очередь TurretCommand — Reader кладёт, Executor забирает
+  cmdQueueHandle = osMessageQueueNew(
+      4, sizeof(proto_turret_interfaces__msg__TurretCommand), NULL);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -341,6 +357,77 @@ void microros_deallocate(void* pointer, void* state);
 void* microros_reallocate(void* pointer, size_t size, void* state);
 void* microros_zero_allocate(size_t number_of_elements, size_t size_of_element,
                              void* state);
+
+// Коллбэк: получили команду → кладём в очередь для Executor
+void cmd_callback(const void* msgin) {
+  osMessageQueuePut(cmdQueueHandle, msgin, 0, 0);
+}
+
+// Инициализация micro-ROS (вызывается в main до запуска RTOS)
+bool Ros2Init(void) {
+  // 1. Кастомный транспорт UART2 DMA
+  rmw_uros_set_custom_transport(true, (void*)&huart2, cubemx_transport_open,
+                                cubemx_transport_close, cubemx_transport_write,
+                                cubemx_transport_read);
+
+  // 2. Аллокатор FreeRTOS (чтобы micro-ROS не использовал malloc)
+  rcl_allocator_t freeRTOS_allocator = rcutils_get_zero_initialized_allocator();
+  freeRTOS_allocator.allocate = microros_allocate;
+  freeRTOS_allocator.deallocate = microros_deallocate;
+  freeRTOS_allocator.reallocate = microros_reallocate;
+  freeRTOS_allocator.zero_allocate = microros_zero_allocate;
+
+  if (!rcutils_set_default_allocator(&freeRTOS_allocator)) {
+    return false;
+  }
+
+  ros2_allocator = rcl_get_default_allocator();
+
+  // 3. init options (rclc_support)
+  if (rclc_support_init(&ros2_support, 0, NULL, &ros2_allocator) !=
+      RCL_RET_OK) {
+    return false;
+  }
+
+  // 4. нода
+  if (rclc_node_init_default(&ros2_node, "proto_turret_node", "",
+                             &ros2_support) != RCL_RET_OK) {
+    return false;
+  }
+
+  // 5. издатель /proto_turret_publisher (заглушка)
+  if (rclc_publisher_init_default(
+          &ros2_publisher, &ros2_node,
+          ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+          "proto_turret_publisher") != RCL_RET_OK) {
+    return false;
+  }
+
+  // 6. подписчик /cmd_turret (принимает TurretCommand от Qt)
+  if (rclc_subscription_init_default(
+          &ros2_subscriber, &ros2_node,
+          ROSIDL_GET_MSG_TYPE_SUPPORT(proto_turret_interfaces, msg,
+                                      TurretCommand),
+          "/cmd_turret") != RCL_RET_OK) {
+    return false;
+  }
+
+  // 7. executor (выполняет коллбэки при spin_some)
+  if (rclc_executor_init(&ros2_executor, &ros2_support.context, 1,
+                         &ros2_allocator) != RCL_RET_OK) {
+    return false;
+  }
+
+  // 8. регистрируем подписку в executor
+  if (rclc_executor_add_subscription(&ros2_executor, &ros2_subscriber,
+                                     &ros2_cmd_msg, &cmd_callback,
+                                     ON_NEW_DATA) != RCL_RET_OK) {
+    return false;
+  }
+
+  return true;
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_Ros2TaskReader */
@@ -352,84 +439,26 @@ void* microros_zero_allocate(size_t number_of_elements, size_t size_of_element,
 /* USER CODE END Header_Ros2TaskReader */
 void Ros2TaskReader(void* argument) {
   /* USER CODE BEGIN 5 */
-
-  // micro-ROS configuration
-
-  rmw_uros_set_custom_transport(true, (void*)&huart2, cubemx_transport_open,
-                                cubemx_transport_close, cubemx_transport_write,
-                                cubemx_transport_read);
-
-  rcl_allocator_t freeRTOS_allocator = rcutils_get_zero_initialized_allocator();
-  freeRTOS_allocator.allocate = microros_allocate;
-  freeRTOS_allocator.deallocate = microros_deallocate;
-  freeRTOS_allocator.reallocate = microros_reallocate;
-  freeRTOS_allocator.zero_allocate = microros_zero_allocate;
-
-  if (!rcutils_set_default_allocator(&freeRTOS_allocator)) {
-    printf("Error on default allocators (line %d)\n", __LINE__);
-  }
-
-  // micro-ROS app
-
-  rcl_publisher_t publisher;
-  std_msgs__msg__Int32 msg;
-  rclc_support_t support;
-  rcl_allocator_t allocator;
-  rcl_node_t node;
-  rclc_executor_t executor;
-  rcl_ret_t ret;
-
-  allocator = rcl_get_default_allocator();
-
-  // create init_options
-  ret = rclc_support_init(&support, 0, NULL, &allocator);
-  if (ret != RCL_RET_OK) {
+  if (!Ros2Init()) {
     while (1) {
-      led_blink(1);
+      led_blink(9);
       osDelay(500);
     }
   }
 
-  // create node
-  ret = rclc_node_init_default(&node, "proto_turret_node", "", &support);
-  if (ret != RCL_RET_OK) {
-    while (1) {
-      led_blink(2);
-      osDelay(500);
-    }
-  }
-
-  // create publisher
-  ret = rclc_publisher_init_default(
-      &publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-      "proto_turret_publisher");
-  if (ret != RCL_RET_OK) {
-    while (1) {
-      led_blink(3);
-      osDelay(500);
-    }
-  }
-
-  ret = rclc_executor_init(&executor, &support.context, 1, &allocator);
-  if (ret != RCL_RET_OK) {
-    while (1) {
-      led_blink(1);
-      osDelay(50);
-    }
-  }
-
-  msg.data = 0;
+  ros2_msg.data = 0;
 
   for (;;) {
-    // rclc_executor_spin_some(&executor, 10);
-    ret = rcl_publish(&publisher, &msg, NULL);
-    if (ret != RCL_RET_OK) {
-      // printf("Error publishing (line %d)\n", __LINE__);
+    // проверить входящие сообщения (вызовет cmd_callback)
+    rclc_executor_spin_some(&ros2_executor, 10);
+
+    // heartbeat — публикуем счётчик раз в ~10 мс
+    if (rcl_publish(&ros2_publisher, &ros2_msg, NULL) != RCL_RET_OK) {
       led_blink(5);
       osDelay(1000);
     }
 
-    msg.data++;
+    ros2_msg.data++;
     osDelay(10);
   }
   /* USER CODE END 5 */
@@ -444,8 +473,14 @@ void Ros2TaskReader(void* argument) {
 /* USER CODE END Header_Ros2TaskExecutor */
 void Ros2TaskExecutor(void* argument) {
   /* USER CODE BEGIN Ros2TaskExecutor */
+  proto_turret_interfaces__msg__TurretCommand cmd;
+
   for (;;) {
-    osDelay(10);
+    // ждём команду из очереди (блокировка, CPU 0% пока нет команд)
+    if (osMessageQueueGet(cmdQueueHandle, &cmd, NULL, osWaitForever) == osOK) {
+      // заглушка: пока просто мигаем светодиодом
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    }
   }
   /* USER CODE END Ros2TaskExecutor */
 }

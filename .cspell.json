@@ -1,0 +1,17 @@
+{
+  "version": "0.2",
+  "language": "en,ru",
+  "ignoreWords": [
+    "huart", "dma", "gpio", "uart", "cubemx",
+    "microros", "uros", "rcl", "rclc", "rmw",
+    "uxr", "uxrce", "xrcedds", "freertos",
+    "cmsis", "tim", "nvic", "hal", "systick",
+    "stm32", "stm32f4", "f446", "nucleo",
+    "usart", "cndtr", "openocd", "gcc",
+    "colcon", "pid", "tmc2209", "as5600",
+    "ros2taskreader", "ros2taskexecutor",
+    "ros2init", "cmdqueue", "turretcommand",
+    "pantilt"
+  ],
+  "allowCompoundWords": true
+}
