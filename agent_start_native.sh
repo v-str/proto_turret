@@ -39,4 +39,4 @@ echo ""
 
 source /opt/ros/lyrical/setup.bash
 source "$AGENT_WS/install/setup.bash"
-exec micro_ros_agent serial --dev "$DEVICE" -v6
+exec "$AGENT_WS/install/micro_ros_agent/lib/micro_ros_agent/micro_ros_agent" serial --dev "$DEVICE" -v6

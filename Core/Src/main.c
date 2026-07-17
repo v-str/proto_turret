@@ -105,7 +105,7 @@ void led_blink(int count) {
   for (int i = 0; i < count; i++) {
     // HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
-    HAL_Delay(50);
+    HAL_Delay(100);
     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
   }
 }
@@ -374,7 +374,7 @@ void StartDefaultTask(void* argument) {
   if (ret != RCL_RET_OK) {
     while (1) {
       led_blink(1);
-      osDelay(100);
+      osDelay(500);
     }
   }
 
@@ -382,7 +382,7 @@ void StartDefaultTask(void* argument) {
   ret = rclc_node_init_default(&node, "proto_turret_node", "", &support);
   if (ret != RCL_RET_OK) {
     while (1) {
-      led_blink(1);
+      led_blink(2);
       osDelay(500);
     }
   }
@@ -393,16 +393,18 @@ void StartDefaultTask(void* argument) {
       "proto_turret_publisher");
   if (ret != RCL_RET_OK) {
     while (1) {
-      led_blink(1);
-      osDelay(1000);
+      led_blink(3);
+      osDelay(500);
     }
   }
 
-  ret = rclc_executor_init(&executor, &support.context, 1, NULL);
-  // if (ret != RCL_RET_OK) {
-  //   led_blink(10);
-  //   while (1);
-  // }
+  ret = rclc_executor_init(&executor, &support.context, 1, &allocator);
+  if (ret != RCL_RET_OK) {
+    while (1) {
+      led_blink(1);
+      osDelay(50);
+    }
+  }
 
   msg.data = 0;
 
@@ -411,7 +413,7 @@ void StartDefaultTask(void* argument) {
     ret = rcl_publish(&publisher, &msg, NULL);
     if (ret != RCL_RET_OK) {
       // printf("Error publishing (line %d)\n", __LINE__);
-      led_blink(1);
+      led_blink(5);
       osDelay(1000);
     }
 
