@@ -62,11 +62,19 @@ UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart2_tx;
 
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-    .name = "defaultTask",
+/* Definitions for ros2TaskReader */
+osThreadId_t ros2TaskReaderHandle;
+const osThreadAttr_t ros2TaskReader_attributes = {
+    .name = "ros2TaskReader",
     .stack_size = 3000 * 4,
+    .priority = (osPriority_t)osPriorityNormal,
+};
+
+/* Definitions for ros2TaskExecutor */
+osThreadId_t ros2TaskExecutorHandle;
+const osThreadAttr_t ros2TaskExecutor_attributes = {
+    .name = "ros2TaskExecutor",
+    .stack_size = 1024 * 4,
     .priority = (osPriority_t)osPriorityNormal,
 };
 /* USER CODE BEGIN PV */
@@ -78,7 +86,8 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
-void StartDefaultTask(void* argument);
+void Ros2TaskReader(void* argument);
+void Ros2TaskExecutor(void* argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -165,9 +174,13 @@ int main(void) {
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle =
-      osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  /* creation of ros2TaskReader */
+  ros2TaskReaderHandle =
+      osThreadNew(Ros2TaskReader, NULL, &ros2TaskReader_attributes);
+
+  /* creation of ros2TaskExecutor */
+  ros2TaskExecutorHandle =
+      osThreadNew(Ros2TaskExecutor, NULL, &ros2TaskExecutor_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -187,7 +200,6 @@ int main(void) {
   /* USER CODE BEGIN BSP */
 
   /* -- Sample board code to switch on leds ---- */
-  BSP_LED_On(LED2);
 
   /* USER CODE END BSP */
 
@@ -331,14 +343,14 @@ void* microros_zero_allocate(size_t number_of_elements, size_t size_of_element,
                              void* state);
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartDefaultTask */
+/* USER CODE BEGIN Header_Ros2TaskReader */
 /**
- * @brief  Function implementing the defaultTask thread.
+ * @brief  Function implementing the ros2TaskReader thread.
  * @param  argument: Not used
  * @retval None
  */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void* argument) {
+/* USER CODE END Header_Ros2TaskReader */
+void Ros2TaskReader(void* argument) {
   /* USER CODE BEGIN 5 */
 
   // micro-ROS configuration
@@ -421,6 +433,21 @@ void StartDefaultTask(void* argument) {
     osDelay(10);
   }
   /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_Ros2TaskExecutor */
+/**
+ * @brief  Function implementing the ros2TaskExecutor thread.
+ * @param  argument: Not used
+ * @retval None
+ */
+/* USER CODE END Header_Ros2TaskExecutor */
+void Ros2TaskExecutor(void* argument) {
+  /* USER CODE BEGIN Ros2TaskExecutor */
+  for (;;) {
+    osDelay(10);
+  }
+  /* USER CODE END Ros2TaskExecutor */
 }
 
 /**
