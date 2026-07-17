@@ -12,7 +12,8 @@
                 "${workspaceFolder}/Drivers/BSP/STM32F4xx-Nucleo",
                 "${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
                 "${workspaceFolder}/Drivers/CMSIS/Include",
-                "${workspaceFolder}/micro_ros_stm32cubemx_utils/microros_static_library/libmicroros/microros_include"
+                "${workspaceFolder}/micro_ros_stm32cubemx_utils/microros_static_library/libmicroros/microros_include",
+                "${workspaceFolder}/microros_component"
             ],
             "defines": [
                 "USE_HAL_DRIVER",
@@ -31,7 +32,8 @@
                     "${workspaceFolder}/Drivers/CMSIS",
                     "${workspaceFolder}/Drivers/STM32F4xx_HAL_Driver",
                     "${workspaceFolder}/Drivers/BSP",
-                    "${workspaceFolder}/micro_ros_stm32cubemx_utils/microros_static_library/libmicroros"
+                    "${workspaceFolder}/micro_ros_stm32cubemx_utils/microros_static_library/libmicroros",
+                    "${workspaceFolder}/microros_component"
                 ],
                 "limitSymbolsToIncludedHeaders": true
             }

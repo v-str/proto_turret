@@ -19,7 +19,7 @@ if [ ! -d "firmware/mcu_ws/ros2" ]; then
 
     ros2 run micro_ros_setup create_firmware_ws.sh generate_lib
 
-    ######## Adding extra packages ########
+    ######## Adding base packages ########
     pushd firmware/mcu_ws > /dev/null
 
         # Workaround: Copy just tf2_msgs
@@ -27,24 +27,27 @@ if [ ! -d "firmware/mcu_ws/ros2" ]; then
         cp -R geometry2/tf2_msgs ros2/tf2_msgs
         rm -rf geometry2
 
-        # Import user defined packages
-        mkdir extra_packages
-        pushd extra_packages > /dev/null
-            USER_CUSTOM_PACKAGES_DIR=$BASE_PATH/../../microros_component/extra_packages
-            if [ -d "$USER_CUSTOM_PACKAGES_DIR" ]; then
-                cp -R $USER_CUSTOM_PACKAGES_DIR/* .
-            fi
-            if [ -f $USER_CUSTOM_PACKAGES_DIR/extra_packages.repos ]; then
-                vcs import --input $USER_CUSTOM_PACKAGES_DIR/extra_packages.repos
-            fi
-            cp -R $BASE_PATH/library_generation/extra_packages/* .
-            vcs import --input extra_packages.repos
-        popd > /dev/null
-
     popd > /dev/null
 else
     echo "=== Зависимости уже скачаны, пропускаем ==="
 fi
+
+######## Adding extra packages (always) ########
+pushd firmware/mcu_ws > /dev/null
+    mkdir -p extra_packages
+    pushd extra_packages > /dev/null
+        USER_CUSTOM_PACKAGES_DIR=$BASE_PATH/../../microros_component/extra_packages
+        if [ -d "$USER_CUSTOM_PACKAGES_DIR" ]; then
+            echo "=== Копируем пользовательские пакеты ==="
+            cp -Rv $USER_CUSTOM_PACKAGES_DIR/* .
+        fi
+        if [ -f $USER_CUSTOM_PACKAGES_DIR/extra_packages.repos ]; then
+            vcs import --input $USER_CUSTOM_PACKAGES_DIR/extra_packages.repos
+        fi
+        cp -R $BASE_PATH/library_generation/extra_packages/* .
+        vcs import --input extra_packages.repos
+    popd > /dev/null
+popd > /dev/null
 
 ######## Patch UXR config ########
 # Increase session connection interval to 60s so it doesn't re-establish
@@ -72,15 +75,7 @@ if [ $RET_CODE = "0" ]; then
     echo "-------------"
     echo $RET_CFLAGS
     echo "-------------"
-    read -p "Do you want to continue with them? (y/n)" -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]
-    then
-        echo "Continuing..."
-    else
-        echo "Aborting"
-        exit 0;
-    fi
+    echo "Continuing automatically..."
 else
     echo "Please read README.md to update your Makefile"
     exit 1;
