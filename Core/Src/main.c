@@ -36,6 +36,8 @@
 #include <time.h>
 #include <uxr/client/transport.h>
 
+#include "constants.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -84,8 +86,8 @@ const osThreadAttr_t ros2TaskExecutor_attributes = {
 osMessageQueueId_t cmdQueueHandle;
 
 // Глобальные объекты micro-ROS (инициализация в Ros2Init)
-rcl_publisher_t ros2_publisher;  // издатель Int32 на /proto_turret_publisher
-rcl_subscription_t ros2_subscriber;  // подписчик TurretCommand на /cmd_turret
+rcl_publisher_t ros2_publisher;      // издатель Int32 на PID_TOPIC_STATUS
+rcl_subscription_t ros2_subscriber;  // подписчик TurretCommand на PID_TOPIC_CMD
 rclc_support_t ros2_support;         // init-options
 rcl_allocator_t ros2_allocator;      // аллокатор
 rcl_node_t ros2_node;                // нода "proto_turret_node"
@@ -390,25 +392,25 @@ bool Ros2Init(void) {
   }
 
   // 4. нода
-  if (rclc_node_init_default(&ros2_node, "proto_turret_node", "",
-                             &ros2_support) != RCL_RET_OK) {
+  if (rclc_node_init_default(&ros2_node, PID_NODE_NAME, "", &ros2_support) !=
+      RCL_RET_OK) {
     return false;
   }
 
-  // 5. издатель /proto_turret_publisher (заглушка)
+  // 5. издатель PID_TOPIC_STATUS (заглушка)
   if (rclc_publisher_init_default(
           &ros2_publisher, &ros2_node,
           ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-          "proto_turret_publisher") != RCL_RET_OK) {
+          PID_TOPIC_STATUS) != RCL_RET_OK) {
     return false;
   }
 
-  // 6. подписчик /cmd_turret (принимает TurretCommand от Qt)
+  // 6. подписчик PID_TOPIC_CMD (принимает TurretCommand от Qt)
   if (rclc_subscription_init_default(
           &ros2_subscriber, &ros2_node,
           ROSIDL_GET_MSG_TYPE_SUPPORT(proto_turret_interfaces, msg,
                                       TurretCommand),
-          "/cmd_turret") != RCL_RET_OK) {
+          PID_TOPIC_CMD) != RCL_RET_OK) {
     return false;
   }
 
