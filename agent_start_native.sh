@@ -12,4 +12,4 @@ DEVICE="/dev/ttyACM0"
 . /opt/ros/lyrical/setup.bash
 . "$AGENT_WS/install/setup.bash"
 
-exec "$AGENT_BIN" serial --dev "$DEVICE" -v5
+exec "$AGENT_BIN" serial --dev "$DEVICE" -v6
