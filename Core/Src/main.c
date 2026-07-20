@@ -65,22 +65,21 @@ UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart2_tx;
 
-/* Definitions for ros2TaskReader */
-osThreadId_t ros2TaskReaderHandle;
-const osThreadAttr_t ros2TaskReader_attributes = {
-    .name = "ros2TaskReader",
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+    .name = "defaultTask",
     .stack_size = 3000 * 4,
     .priority = (osPriority_t)osPriorityNormal,
 };
+/* USER CODE BEGIN PV */
 
-/* Definitions for ros2TaskExecutor */
 osThreadId_t ros2TaskExecutorHandle;
 const osThreadAttr_t ros2TaskExecutor_attributes = {
     .name = "ros2TaskExecutor",
     .stack_size = 1024 * 4,
     .priority = (osPriority_t)osPriorityNormal,
 };
-/* USER CODE BEGIN PV */
 
 // Очередь: Reader → Executor (TurretCommand)
 osMessageQueueId_t cmdQueueHandle;
@@ -102,11 +101,11 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
-void Ros2TaskReader(void* argument);
-void Ros2TaskExecutor(void* argument);
+void StartDefaultTask(void* argument);
 
 /* USER CODE BEGIN PFP */
 bool Ros2Init(void);
+void Ros2TaskExecutor(void* argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -192,16 +191,13 @@ int main(void) {
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of ros2TaskReader */
-  ros2TaskReaderHandle =
-      osThreadNew(Ros2TaskReader, NULL, &ros2TaskReader_attributes);
-
-  /* creation of ros2TaskExecutor */
-  ros2TaskExecutorHandle =
-      osThreadNew(Ros2TaskExecutor, NULL, &ros2TaskExecutor_attributes);
+  /* creation of defaultTask */
+  defaultTaskHandle =
+      osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  ros2TaskExecutorHandle =
+      osThreadNew(Ros2TaskExecutor, NULL, &ros2TaskExecutor_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -218,6 +214,9 @@ int main(void) {
   /* USER CODE BEGIN BSP */
 
   /* -- Sample board code to switch on leds ---- */
+
+  HAL_GPIO_WritePin(M1_EN_GPIO_Port, M1_EN_Pin,
+                    GPIO_PIN_SET);  // HIGH = выключен
 
   /* USER CODE END BSP */
 
@@ -333,6 +332,8 @@ static void MX_DMA_Init(void) {
 static void MX_GPIO_Init(void) {
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
@@ -341,7 +342,29 @@ static void MX_GPIO_Init(void) {
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA,
+                    M1_EN_Pin | M1_STEP_Pin | M1_DIR_Pin | M2_STEP_Pin |
+                        M2_DIR_Pin | LASER_Pin,
+                    GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : M1_EN_Pin M1_STEP_Pin M1_DIR_Pin M2_STEP_Pin
+                           M2_DIR_Pin LASER_Pin */
+  GPIO_InitStruct.Pin = M1_EN_Pin | M1_STEP_Pin | M1_DIR_Pin | M2_STEP_Pin |
+                        M2_DIR_Pin | LASER_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  // Настройка STEP и DIR как выходов
+  GPIO_InitStruct.Pin = M1_STEP_Pin | M1_DIR_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(M1_STEP_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
@@ -430,16 +453,25 @@ bool Ros2Init(void) {
   return true;
 }
 
+void Ros2TaskExecutor(void* argument) {
+  proto_turret_interfaces__msg__TurretCommand cmd;
+  for (;;) {
+    if (osMessageQueueGet(cmdQueueHandle, &cmd, NULL, osWaitForever) == osOK) {
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    }
+  }
+}
+
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_Ros2TaskReader */
+/* USER CODE BEGIN Header_StartDefaultTask */
 /**
- * @brief  Function implementing the ros2TaskReader thread.
+ * @brief  Function implementing the defaultTask thread.
  * @param  argument: Not used
  * @retval None
  */
-/* USER CODE END Header_Ros2TaskReader */
-void Ros2TaskReader(void* argument) {
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void* argument) {
   /* USER CODE BEGIN 5 */
   if (!Ros2Init()) {
     while (1) {
@@ -447,6 +479,10 @@ void Ros2TaskReader(void* argument) {
       osDelay(500);
     }
   }
+
+  // --- ВКЛЮЧАЕМ ДРАЙВЕР ПОСЛЕ ИНИЦИАЛИЗАЦИИ ---
+  HAL_GPIO_WritePin(M1_EN_GPIO_Port, M1_EN_Pin,
+                    GPIO_PIN_RESET);  // LOW = включен
 
   ros2_msg.data = 0;
 
@@ -464,27 +500,6 @@ void Ros2TaskReader(void* argument) {
     osDelay(10);
   }
   /* USER CODE END 5 */
-}
-
-/* USER CODE BEGIN Header_Ros2TaskExecutor */
-/**
- * @brief  Function implementing the ros2TaskExecutor thread.
- * @param  argument: Not used
- * @retval None
- */
-/* USER CODE END Header_Ros2TaskExecutor */
-void Ros2TaskExecutor(void* argument) {
-  /* USER CODE BEGIN Ros2TaskExecutor */
-  proto_turret_interfaces__msg__TurretCommand cmd;
-
-  for (;;) {
-    // ждём команду из очереди (блокировка, CPU 0% пока нет команд)
-    if (osMessageQueueGet(cmdQueueHandle, &cmd, NULL, osWaitForever) == osOK) {
-      // заглушка: пока просто мигаем светодиодом
-      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-    }
-  }
-  /* USER CODE END Ros2TaskExecutor */
 }
 
 /**
