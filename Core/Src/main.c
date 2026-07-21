@@ -24,6 +24,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <math.h>
 #include <proto_turret_interfaces/msg/turret_command.h>
 #include <rcl/error_handling.h>
 #include <rcl/rcl.h>
@@ -47,6 +48,14 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define MOTOR_STEPS_PER_REV \
+  3200  // сколько STEP-импульсов за 1 полный оборот вала мотора
+        // Микрошаг = TMC2209 делит 1 полный шаг мотора на мелкие кусочки
+        // TMC2209 поддерживает: 200 (без микрошагов), 400, 800, 1600, 3200
+        // 3200 = 16 микрошагов на полный шаг × 200 полных шагов за оборот
+        // (драйвер настроен перемычками MS1/MS2 на 16 микрошагов)
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -80,6 +89,9 @@ const osThreadAttr_t ros2TaskExecutor_attributes = {
     .stack_size = 1024 * 4,
     .priority = (osPriority_t)osPriorityNormal,
 };
+
+volatile int step_count = 0;  // сколько импульсов осталось (SET + RESET)
+volatile int step_busy = 0;   // 1 = мотор движется
 
 // Очередь: Reader → Executor (TurretCommand)
 osMessageQueueId_t cmdQueueHandle;
@@ -131,6 +143,147 @@ void led_blink(int count) {
     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
     HAL_Delay(100);
     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+  }
+}
+
+// -------------------------------------------------------------------
+// motor_timer_init() — настройка TIM3 (вызывается один раз при старте)
+//   TIM3 — это аппаратный счётчик внутри микроконтроллера.
+//   Он тикает сам по себе, не нагружая процессор.
+//   Когда он досчитывает до ARR (Auto-Reload Register) — происходит прерывание.
+//   В прерывании мы дёргаем STEP.
+//   Сделал это для того чтобы не трогать HAL_Delay (паузы) в основном цикле.
+// -------------------------------------------------------------------
+void motor_timer_init(void) {
+  // Включаем тактирование TIM3 (без питания он не работает)
+  // RCC = Reset and Clock Control (сброс и тактирование)
+  __HAL_RCC_TIM3_CLK_ENABLE();
+
+  // Настраиваем прерывание: приоритет 5 (чем меньше число, тем важнее
+  // прерывание) NVIC = Nested Vectored Interrupt Controller (контроллер
+  // прерываний) IRQn = IRQ number (номер запроса прерывания)
+  HAL_NVIC_SetPriority(TIM3_IRQn, 5, 0);
+  // Разрешаем прерывание — теперь когда TIM3 досчитает, вызовется
+  // TIM3_IRQHandler
+  HAL_NVIC_EnableIRQ(TIM3_IRQn);
+
+  // PSC = Prescaler (делитель частоты)
+  // На вход таймера приходит 84 МГц (84 000 000 тиков в секунду).
+  // PSC=84-1 → делим на 84 → получаем 1 000 000 тиков в секунду (1 МГц).
+  // То есть один тик таймера = 1 микросекунда (мкс).
+  TIM3->PSC = 84 - 1;
+
+  // ARR = Auto-Reload Register (регистр автоперезагрузки — до скольки считать)
+  // Таймер считает: 0 → 1 → 2 → ... → ARR → 0 → 1 → ...
+  // Когда доходит до ARR и сбрасывается в 0 — происходит прерывание.
+  // ARR = 250-1 → 1 000 000 / 250 = 4000 прерываний в секунду.
+  // 4000 прерываний / 2 (SET+RESET) = 2000 шагов мотора в секунду.
+  TIM3->ARR = 250 - 1;
+
+  // CR1 = Control Register 1 (регистр управления 1 — настройки таймера)
+  // URS = Update Request Source (источник запроса обновления).
+  //   Если URS=1 — прерывание возникает ТОЛЬКО при переполнении счётчика,
+  //   а не от других случайных событий.
+  // ARPE = Auto-Reload Preload Enable (разрешение предзагрузки ARR).
+  //   Если ARPE=1 — новое значение ARR применится после переполнения,
+  //   а не сразу. Можно менять скорость на ходу без глюков.
+  TIM3->CR1 = TIM_CR1_URS | TIM_CR1_ARPE;
+
+  // DIER = DMA/Interrupt Enable Register (регистр разрешения прерываний)
+  // UIE = Update Interrupt Enable (разрешить прерывание при переполнении)
+  //   То есть: "когда таймер досчитает до ARR и сбросится — вызови прерывание"
+  TIM3->DIER = TIM_DIER_UIE;
+}
+
+// -------------------------------------------------------------------
+// motor_move() — запускает вращение мотора
+//   steps: сколько шагов сделать (например 200 = один оборот)
+//   dir:   0 = CW — ClockWise (по часовой), 1 = CCW — CounterClockWise (против)
+//   Скорость заранее задана в motor_timer_init() (сейчас ~2000 шаг/сек)
+//   ВАЖНО: функция НЕ ждёт пока мотор доедет, а сразу возвращается.
+//          Таймер сам дёргает STEP в фоне, CPU свободен.
+//   Если вызвать motor_move() когда мотор ещё крутится —
+//          старая команда отменяется, начинается новая.
+// -------------------------------------------------------------------
+void motor_move(int steps, int dir) {
+  // Если шагов 0 — делать нечего, выходим
+  if (steps == 0) return;
+
+  // Устанавливаем пин DIR: HIGH = крутим в одну сторону, LOW = в другую
+  // GPIO = General Purpose Input/Output (универсальный вход/выход)
+  // dir=1 → GPIO_PIN_SET (HIGH = 3.3V), dir=0 → GPIO_PIN_RESET (LOW = 0V)
+  HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin,
+                    dir ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+  // Сколько раз нужно переключить STEP (дёрг-дёрг).
+  // Один шаг мотора = SET + RESET = 2 прерывания.
+  // Например: steps=200 → step_count=400 прерываний
+  step_count = steps * 2;
+
+  // Говорим всем: "мотор занят, новую команду не принимаю"
+  step_busy = 1;
+
+  // Сбрасываем счётчик таймера в 0, чтобы начать с начала
+  // CNT = Counter (счётчик)
+  TIM3->CNT = 0;
+
+  // Чистим старый флаг прерывания — мало ли висел с прошлого раза
+  // SR = Status Register (регистр статуса/состояния)
+  // UIF = Update Interrupt Flag (флаг: "таймер переполнился")
+  TIM3->SR &= ~TIM_SR_UIF;
+
+  // ЗАПУСКАЕМ ТАЙМЕР!
+  // CR1 = Control Register 1 (регистр управления)
+  // CEN = Counter ENable (разрешить счёт — то есть "Play")
+  // Теперь он сам тикает, сам вызывает TIM3_IRQHandler, сам дёргает STEP.
+  // CPU в это время может делать что угодно.
+  TIM3->CR1 |= TIM_CR1_CEN;
+}
+
+// -------------------------------------------------------------------
+// TIM3_IRQHandler() — вызывается таймером 4000 раз в секунду
+//   Каждый вызов = прошло 250 микросекунд (мкс).
+//   Задача: переключить STEP (SET↔RESET) и посчитать сколько осталось.
+//   Когда шаги кончились — выключить таймер и сказать что мотор свободен.
+//   ЭТУ ФУНКЦИЮ НЕ ВЫЗЫВАЮТ ВРУЧНУЮ — её вызывает ТАЙМЕР (железо).
+//   IRQ = Interrupt ReQuest (запрос прерывания)
+//   Handler = обработчик (функция, которая обрабатывает прерывание)
+// -------------------------------------------------------------------
+void TIM3_IRQHandler(void) {
+  // Проверяем: это TIM3 досчитал до ARR (Auto-Reload Register) и переполнился?
+  // SR = Status Register (регистр статуса — флаги событий)
+  // UIF = Update Interrupt Flag (флаг: "произошло обновление/переполнение")
+  if (TIM3->SR & TIM_SR_UIF) {
+    // Сбрасываем флаг — записываем 0 в этот бит.
+    // Иначе флаг останется висеть, и прерывание будет вызываться снова и снова.
+    TIM3->SR &= ~TIM_SR_UIF;
+
+    // Если ещё остались шаги — работаем
+    if (step_count > 0) {
+      // Переключаем STEP: было SET (1) → стало RESET (0), было RESET → стало
+      // SET TogglePin (переключить пин): если на пине 1 → ставит 0, если 0 →
+      // ставит 1
+      HAL_GPIO_TogglePin(M1_STEP_GPIO_Port, M1_STEP_Pin);
+
+      // На один импульс меньше осталось
+      step_count--;
+
+      // Если шаги кончились — останавливаем всё
+      if (step_count == 0) {
+        // Выключаем таймер (снимаем с Play)
+        // CR1 = Control Register 1 (регистр управления)
+        // CEN = Counter ENable (бит разрешения счёта)
+        // &= ~CEN значит "записать 0 в бит CEN" — таймер замирает
+        TIM3->CR1 &= ~TIM_CR1_CEN;
+
+        // Принудительно ставим STEP в 0 (LOW) — на всякий случай,
+        // чтобы не осталось висящего HIGH на пине
+        HAL_GPIO_WritePin(M1_STEP_GPIO_Port, M1_STEP_Pin, GPIO_PIN_RESET);
+
+        // Говорим что мотор свободен — можно слать новую команду
+        step_busy = 0;
+      }
+    }
   }
 }
 /* USER CODE END 0 */
@@ -330,9 +483,8 @@ static void MX_DMA_Init(void) {
  * @retval None
  */
 static void MX_GPIO_Init(void) {
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
-
   GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
 
   /* USER CODE END MX_GPIO_Init_1 */
 
@@ -343,10 +495,12 @@ static void MX_GPIO_Init(void) {
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA,
-                    M1_EN_Pin | M1_STEP_Pin | M1_DIR_Pin | M2_STEP_Pin |
-                        M2_DIR_Pin | LASER_Pin,
-                    GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(M1_EN_GPIO_Port, M1_EN_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(
+      GPIOA, M1_STEP_Pin | M1_DIR_Pin | M2_STEP_Pin | M2_DIR_Pin | LASER_Pin,
+      GPIO_PIN_RESET);
 
   /*Configure GPIO pins : M1_EN_Pin M1_STEP_Pin M1_DIR_Pin M2_STEP_Pin
                            M2_DIR_Pin LASER_Pin */
@@ -383,19 +537,25 @@ void* microros_reallocate(void* pointer, size_t size, void* state);
 void* microros_zero_allocate(size_t number_of_elements, size_t size_of_element,
                              void* state);
 
-// Коллбэк: получили команду → кладём в очередь для Executor
+// Коллбэк — callback (функция обратного вызова).
+// Получили команду от Qt → кладём в очередь для Executor
 void cmd_callback(const void* msgin) {
   osMessageQueuePut(cmdQueueHandle, msgin, 0, 0);
 }
 
 // Инициализация micro-ROS (вызывается в main до запуска RTOS)
 bool Ros2Init(void) {
-  // 1. Кастомный транспорт UART2 DMA
+  // 1. Кастомный (свой) транспорт UART2 DMA
+  // UART = Universal Asynchronous Receiver-Transmitter (универсальный
+  // приёмопередатчик) DMA = Direct Memory Access (прямой доступ к памяти —
+  // данные бегают сами, CPU не трогаем)
   rmw_uros_set_custom_transport(true, (void*)&huart2, cubemx_transport_open,
                                 cubemx_transport_close, cubemx_transport_write,
                                 cubemx_transport_read);
 
-  // 2. Аллокатор FreeRTOS (чтобы micro-ROS не использовал malloc)
+  // 2. Аллокатор — allocator (выделятор памяти) FreeRTOS.
+  //   Чтобы micro-ROS не использовал стандартный malloc (может глючить в RTOS),
+  //   а выделял память через FreeRTOS-функции pvPortMalloc и vPortFree.
   rcl_allocator_t freeRTOS_allocator = rcutils_get_zero_initialized_allocator();
   freeRTOS_allocator.allocate = microros_allocate;
   freeRTOS_allocator.deallocate = microros_deallocate;
@@ -408,19 +568,25 @@ bool Ros2Init(void) {
 
   ros2_allocator = rcl_get_default_allocator();
 
-  // 3. init options (rclc_support)
+  // 3. Инициализация support — rclc_support_init()
+  //   Создаёт базовую инфраструктуру micro-ROS:
+  //   контекст, allocator, init_options (настройки инициализации)
   if (rclc_support_init(&ros2_support, 0, NULL, &ros2_allocator) !=
       RCL_RET_OK) {
     return false;
   }
 
-  // 4. нода
+  // 4. Создаём ноду — node (узел ROS-сети).
+  //   Узел называется PID_NODE_NAME (задано в constants.h).
+  //   Он будет издавать (publish) и подписываться (subscribe) на топики.
   if (rclc_node_init_default(&ros2_node, PID_NODE_NAME, "", &ros2_support) !=
       RCL_RET_OK) {
     return false;
   }
 
-  // 5. издатель PID_TOPIC_STATUS (заглушка)
+  // 5. Создаём издателя — publisher (отправитель сообщений).
+  //   Издаёт (публикует) в топик PID_TOPIC_STATUS (сейчас заглушка — Int32).
+  //   Пока шлём просто счётчик, потом будет статус мотора/лазера.
   if (rclc_publisher_init_default(
           &ros2_publisher, &ros2_node,
           ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
@@ -428,7 +594,8 @@ bool Ros2Init(void) {
     return false;
   }
 
-  // 6. подписчик PID_TOPIC_CMD (принимает TurretCommand от Qt)
+  // 6. Создаём подписчика — subscriber (приёмщик сообщений).
+  //   Подписывается на топик PID_TOPIC_CMD — принимает TurretCommand от Qt.
   if (rclc_subscription_init_default(
           &ros2_subscriber, &ros2_node,
           ROSIDL_GET_MSG_TYPE_SUPPORT(proto_turret_interfaces, msg,
@@ -437,13 +604,20 @@ bool Ros2Init(void) {
     return false;
   }
 
-  // 7. executor (выполняет коллбэки при spin_some)
+  // 7. Создаём executor (исполнитель).
+  //   Он умеет вызывать коллбэки (функции обратного вызова) при получении
+  //   сообщений. rclc_executor_spin_some() позже будет проверять — не пришло ли
+  //   чего от Qt.
   if (rclc_executor_init(&ros2_executor, &ros2_support.context, 1,
                          &ros2_allocator) != RCL_RET_OK) {
     return false;
   }
 
-  // 8. регистрируем подписку в executor
+  // 8. Регистрируем подписку в executor:
+  //   — ros2_subscriber (кого слушать)
+  //   — &ros2_cmd_msg (куда класть принятое сообщение)
+  //   — &cmd_callback (какую функцию вызвать при получении)
+  //   — ON_NEW_DATA (вызывать коллбэк только когда пришли свежие данные)
   if (rclc_executor_add_subscription(&ros2_executor, &ros2_subscriber,
                                      &ros2_cmd_msg, &cmd_callback,
                                      ON_NEW_DATA) != RCL_RET_OK) {
@@ -453,11 +627,70 @@ bool Ros2Init(void) {
   return true;
 }
 
+// -------------------------------------------------------------------
+// Ros2TaskExecutor() — второй тред (поток) FreeRTOS.
+//   Крутится в бесконечном цикле, ждёт команды из очереди.
+//   Как пришла команда от Qt — дёргает лазер и/или мотор.
+//   Если Qt молчит больше 100 мс (миллисекунд) — останавливает мотор.
+//   ROS = Robot Operating System (робочая операционка от роботов)
+// -------------------------------------------------------------------
 void Ros2TaskExecutor(void* argument) {
+  // Это будет наша переменная для ROS-сообщения.
+  // Qt заполняет поля: pan_pos, tilt_pos, pan_vel, tilt_vel, laser_enable
   proto_turret_interfaces__msg__TurretCommand cmd;
+
   for (;;) {
-    if (osMessageQueueGet(cmdQueueHandle, &cmd, NULL, osWaitForever) == osOK) {
-      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    // osMessageQueueGet — забирает сообщение из очереди.
+    // Первый параметр — handle (дескриптор/ручка) очереди — cmdQueueHandle.
+    // Второй — куда сохранить сообщение (&cmd — адрес переменной cmd).
+    // Третий — NULL (не используем, можно передать 0).
+    // Последний — таймаут (время ожидания) в миллисекундах (100 мс).
+    //
+    // Если за 100 мс сообщение пришло → возвращает osOK.
+    // Если за 100 мс сообщения НЕТ → возвращает не osOK (таймаут).
+    // Таймаут нужен чтобы Qt могла остановить мотор — если Qt молчит,
+    // значит мышь не двигается, и мотор не нужен.
+    if (osMessageQueueGet(cmdQueueHandle, &cmd, NULL, 100) == osOK) {
+      // ---------------------------------------------------------------
+      // КОМАНДА ПРИШЛА
+      // ---------------------------------------------------------------
+
+      // Управление лазером:
+      // cmd.laser_enable=true  → ставим HIGH (лазер горит)
+      // cmd.laser_enable=false → ставим LOW  (лазер выключен)
+      HAL_GPIO_WritePin(LASER_GPIO_Port, LASER_Pin,
+                        cmd.laser_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+      // Управление мотором M1 (pan):
+      // cmd = command (команда)
+      // pan_vel = pan velocity (скорость поворота), приходит от Qt.
+      // Если НЕ ноль — крутим. Если ноль — стоп.
+      // 0.0f — ноль, f = float (число с плавающей точкой)
+      if (cmd.pan_vel != 0.0f) {
+        // Определяем направление:
+        // pan_vel > 0 (мышь вправо)  → dir = 1 (CW — по часовой)
+        // pan_vel < 0 (мышь влево)   → dir = 0 (CCW — против часовой)
+        int dir = cmd.pan_vel > 0.0f ? 1 : 0;
+
+        // Запускаем мотор на 10 000 000 шагов.
+        // Это просто "очень много" — условно бесконечно.
+        // Реально мотор крутится пока Qt шлёт команды.
+        // Когда Qt перестанет слать — таймаут 100 мс остановит мотор.
+        motor_move(10000000, dir);
+      } else {
+        // pan_vel = 0 → Qt говорит "стоп"
+        // Выключаем таймер — мотор перестаёт крутиться
+        TIM3->CR1 &= ~TIM_CR1_CEN;
+        step_busy = 0;
+      }
+    } else {
+      // ---------------------------------------------------------------
+      // ТАЙМАУТ — Qt молчит 100 мс
+      // ---------------------------------------------------------------
+      // Значит мышь не двигается, Qt-нода перестала слать команды.
+      // Останавливаем мотор, если он ещё крутится.
+      TIM3->CR1 &= ~TIM_CR1_CEN;
+      step_busy = 0;
     }
   }
 }
@@ -480,17 +713,23 @@ void StartDefaultTask(void* argument) {
     }
   }
 
-  // --- ВКЛЮЧАЕМ ДРАЙВЕР ПОСЛЕ ИНИЦИАЛИЗАЦИИ ---
-  HAL_GPIO_WritePin(M1_EN_GPIO_Port, M1_EN_Pin,
-                    GPIO_PIN_RESET);  // LOW = включен
+  // --- ВКЛЮЧАЕМ ДРАЙВЕР МОТОРА ПОСЛЕ ИНИЦИАЛИЗАЦИИ ---
+  HAL_GPIO_WritePin(M1_EN_GPIO_Port, M1_EN_Pin, GPIO_PIN_RESET);
+  led_blink(3);  // три коротких мигания = драйвер включён
+
+  // Инициализация таймера для плавного управления мотором
+  motor_timer_init();
 
   ros2_msg.data = 0;
 
   for (;;) {
-    // проверить входящие сообщения (вызовет cmd_callback)
+    // rclc_executor_spin_some — проверяет, не пришло ли сообщение от Qt.
+    // Если пришло — вызывает cmd_callback (кладёт сообщение в очередь).
     rclc_executor_spin_some(&ros2_executor, 10);
 
-    // heartbeat — публикуем счётчик раз в ~10 мс
+    // heartbeat (сердцебиение) — публикуем счётчик в топик STATUS.
+    // Qt может видеть это как "STM32 жив, связь есть".
+    // Публикуем раз в ~10 миллисекунд.
     if (rcl_publish(&ros2_publisher, &ros2_msg, NULL) != RCL_RET_OK) {
       led_blink(5);
       osDelay(1000);
