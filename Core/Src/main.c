@@ -215,7 +215,7 @@ void motor_move(int steps, int dir) {
   HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin,
                     dir ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
-  // Сколько раз нужно переключить STEP (дёрг-дёрг).
+  // Сколько раз нужно переключить STEP.
   // Один шаг мотора = SET + RESET = 2 прерывания.
   // Например: steps=200 → step_count=400 прерываний
   step_count = steps * 2;
