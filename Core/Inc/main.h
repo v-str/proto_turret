@@ -65,10 +65,12 @@ void Error_Handler(void);
 #define USART_RX_GPIO_Port GPIOA
 #define M1_EN_Pin GPIO_PIN_4
 #define M1_EN_GPIO_Port GPIOA
-#define M1_STEP_Pin GPIO_PIN_8
-#define M1_STEP_GPIO_Port GPIOA
-#define M1_DIR_Pin GPIO_PIN_9
+#define M2_EN_Pin GPIO_PIN_6
+#define M2_EN_GPIO_Port GPIOA
+#define M1_DIR_Pin GPIO_PIN_7
 #define M1_DIR_GPIO_Port GPIOA
+#define M1_STEP_Pin GPIO_PIN_4
+#define M1_STEP_GPIO_Port GPIOC
 #define M2_STEP_Pin GPIO_PIN_10
 #define M2_STEP_GPIO_Port GPIOA
 #define M2_DIR_Pin GPIO_PIN_11
