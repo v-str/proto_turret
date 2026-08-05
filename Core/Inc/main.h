@@ -51,6 +51,8 @@ extern "C" {
 
 /* USER CODE END EM */
 
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 
@@ -63,18 +65,28 @@ void Error_Handler(void);
 #define USART_TX_GPIO_Port GPIOA
 #define USART_RX_Pin GPIO_PIN_3
 #define USART_RX_GPIO_Port GPIOA
-#define M1_EN_Pin GPIO_PIN_4
-#define M1_EN_GPIO_Port GPIOA
 #define M2_EN_Pin GPIO_PIN_6
 #define M2_EN_GPIO_Port GPIOA
-#define M1_DIR_Pin GPIO_PIN_7
+#define M2_DIR_Pin GPIO_PIN_5
+#define M2_DIR_GPIO_Port GPIOC
+#define M2_STEP_Pin GPIO_PIN_0
+#define M2_STEP_GPIO_Port GPIOB
+#define SWITCH_HOR_LEFT_Pin GPIO_PIN_1
+#define SWITCH_HOR_LEFT_GPIO_Port GPIOB
+#define SWITCH_HOR_RIGHT_Pin GPIO_PIN_2
+#define SWITCH_HOR_RIGHT_GPIO_Port GPIOB
+#define FAN_Pin GPIO_PIN_12
+#define FAN_GPIO_Port GPIOB
+#define SWITCH_VERT_FRONT_Pin GPIO_PIN_14
+#define SWITCH_VERT_FRONT_GPIO_Port GPIOB
+#define SWITCH_VERT_REAR_Pin GPIO_PIN_15
+#define SWITCH_VERT_REAR_GPIO_Port GPIOB
+#define M1_STEP_Pin GPIO_PIN_9
+#define M1_STEP_GPIO_Port GPIOA
+#define M1_DIR_Pin GPIO_PIN_10
 #define M1_DIR_GPIO_Port GPIOA
-#define M1_STEP_Pin GPIO_PIN_4
-#define M1_STEP_GPIO_Port GPIOC
-#define M2_STEP_Pin GPIO_PIN_10
-#define M2_STEP_GPIO_Port GPIOA
-#define M2_DIR_Pin GPIO_PIN_11
-#define M2_DIR_GPIO_Port GPIOA
+#define M1_EN_Pin GPIO_PIN_11
+#define M1_EN_GPIO_Port GPIOA
 #define LASER_Pin GPIO_PIN_12
 #define LASER_GPIO_Port GPIOA
 #define TMS_Pin GPIO_PIN_13

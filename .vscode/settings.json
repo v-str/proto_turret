@@ -1,5 +1,8 @@
 {
     "cSpell.enabled": false,
     "editor.unicodeHighlight.ambiguousCharacters": false,
-    "editor.unicodeHighlight.invisibleCharacters": false
+    "editor.unicodeHighlight.invisibleCharacters": false,
+    "files.associations": {
+      "int32.h": "c"
+    }
 }
