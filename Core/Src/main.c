@@ -173,9 +173,14 @@ float lm75_read_temperature(void) {
   uint8_t buffer[2];
 
   // пробуем прочитать из датчика, адрес для чтения 0x00, читаем 2 байта
-  if (HAL_I2C_Mem_Read(&hi2c3, LM75_TEMP_ADDRESS, 0x00, I2C_MEMADD_SIZE_8BIT,
-                       buffer, 2, 50) != HAL_OK) {
-    return -1000.0f;
+  HAL_StatusTypeDef status = HAL_I2C_Mem_Read(
+      &hi2c3, LM75_TEMP_ADDRESS, 0x00, I2C_MEMADD_SIZE_8BIT, buffer, 2, 50);
+
+  if (status != HAL_OK) {
+    // Диагностика: разные коды = разные причины.
+    if (status == HAL_BUSY) return -1000.0f;     // периферия была занята
+    if (status == HAL_TIMEOUT) return -1001.0f;  // обмен не успел за 100 мс
+    return -1002.0f;  // HAL_ERROR: датчик не ответил (NACK)
   }
 
   // объединяем эти 2 байта в одну переменную
@@ -879,7 +884,7 @@ void StartDefaultTask(void* argument) {
 
     // ros2_temp_int_msg.data++;
 
-    if (is_lm75_present && (temperature_ticks % 100 == 0)) {
+    if (is_lm75_present && (temperature_ticks % 33 == 0)) {
       ros2_turret_temperature.data = lm75_read_temperature();
       if (rcl_publish(&ros2_turret_temperature_publisher,
                       &ros2_turret_temperature, NULL) != RCL_RET_OK) {
