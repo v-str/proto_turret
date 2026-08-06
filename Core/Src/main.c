@@ -115,7 +115,8 @@ std_msgs__msg__Float32
                               // отправляю в qt-ноду
 proto_turret_interfaces__msg__TurretCommand ros2_cmd_msg;  // входящая команда
 
-static uint8_t is_lm75_present = 0;  // подключен ли датчик температуры?
+static uint8_t is_lm75_present = 0;  // подключен ли датчик температуры
+static uint32_t temperature_ticks = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -159,9 +160,9 @@ int usleep(useconds_t usec) {
 void led_blink(int count) {
   for (int i = 0; i < count; i++) {
     // HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-    HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
-    HAL_Delay(100);
     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+    osDelay(500);
+    HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
   }
 }
 
@@ -189,6 +190,34 @@ float lm75_read_temperature(void) {
   // показания температуры в этом датчике лежат в старших 9 битах, в младших 7
   // лежит мусор либо 0, поэтому избавимся от них
   return (float)(raw >> 7) * 0.5f;
+}
+
+/*
+ф-ция для отправки температуры в ROS-ноду
+*/
+
+void publish_temperature() {
+  // проверяем датчик температуры
+  is_lm75_present =
+      (HAL_I2C_IsDeviceReady(&hi2c3, LM75_TEMP_ADDRESS, 3, 100) == HAL_OK);
+
+  if (is_lm75_present) {
+    if (temperature_ticks % 50 == 0) {
+      ros2_turret_temperature.data = lm75_read_temperature();
+      if (rcl_publish(&ros2_turret_temperature_publisher,
+                      &ros2_turret_temperature, NULL) != RCL_RET_OK) {
+        led_blink(10);
+      }
+    }
+  } else {
+    ros2_turret_temperature.data = -1000.0f;
+    if (rcl_publish(&ros2_turret_temperature_publisher,
+                    &ros2_turret_temperature, NULL) != RCL_RET_OK) {
+      led_blink(10);
+    }
+  }
+
+  ++temperature_ticks;
 }
 
 /* USER CODE END 0 */
@@ -860,41 +889,15 @@ void StartDefaultTask(void* argument) {
     }
   }
 
-  // проверяем датчик температуры
-  is_lm75_present =
-      (HAL_I2C_IsDeviceReady(&hi2c3, LM75_TEMP_ADDRESS, 3, 100) == HAL_OK);
-
-  // ros2_temp_int_msg.data = 0;
-
-  uint32_t temperature_ticks = 0;
-
   for (;;) {
     // rclc_executor_spin_some — проверяет, не пришло ли сообщение от Qt.
     // Если пришло — вызывает cmd_callback (кладёт сообщение в очередь).
     rclc_executor_spin_some(&ros2_executor, 10);
 
-    // heartbeat (сердцебиение) — публикуем счётчик в топик STATUS.
-    // Qt может видеть это как "STM32 жив, связь есть".
-    // Публикуем раз в ~10 миллисекунд.
-    // if (rcl_publish(&ros2_dummy_publisher, &ros2_temp_int_msg, NULL) !=
-    //     RCL_RET_OK) {
-    //   led_blink(5);
-    //   osDelay(1000);
-    // }
-
-    // ros2_temp_int_msg.data++;
-
-    if (is_lm75_present && (temperature_ticks % 33 == 0)) {
-      ros2_turret_temperature.data = lm75_read_temperature();
-      if (rcl_publish(&ros2_turret_temperature_publisher,
-                      &ros2_turret_temperature, NULL) != RCL_RET_OK) {
-        led_blink(10);
-        osDelay(5000);
-      }
-    }
+    // опубликовать в ноду температуру
+    publish_temperature();
 
     osDelay(10);
-    ++temperature_ticks;
   }
   /* USER CODE END 5 */
 }
