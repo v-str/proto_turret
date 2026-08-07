@@ -708,8 +708,7 @@ extern void* microros_reallocate(void* pointer, size_t size, void* state);
 extern void* microros_zero_allocate(size_t number_of_elements,
                                     size_t size_of_element, void* state);
 
-// Коллбэк — callback (функция обратного вызова).
-// Получили команду от Qt → кладём в очередь для Executor
+// Коллбэк, получили команду от Qt → кладём в очередь для Executor
 void cmd_callback(const void* msgin) {
   osMessageQueuePut(cmdQueueHandle, msgin, 0, 0);
 }
@@ -840,6 +839,10 @@ void Ros2TaskExecutor(void* argument) {
       HAL_GPIO_WritePin(LASER_GPIO_Port, LASER_Pin,
                         cmd.laser_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
+      // Управление вентилятором:
+      HAL_GPIO_WritePin(FAN_GPIO_Port, FAN_Pin,
+                        cmd.fan_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
       // Управление мотором M1 (pan):
       // cmd = command (команда)
       // pan_vel = pan velocity (скорость поворота), приходит от Qt.
@@ -888,6 +891,8 @@ void StartDefaultTask(void* argument) {
       osDelay(500);
     }
   }
+
+  HAL_GPIO_WritePin(FAN_GPIO_Port, FAN_Pin, GPIO_PIN_RESET);
 
   for (;;) {
     // rclc_executor_spin_some — проверяет, не пришло ли сообщение от Qt.
