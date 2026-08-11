@@ -3,6 +3,8 @@
     "editor.unicodeHighlight.ambiguousCharacters": false,
     "editor.unicodeHighlight.invisibleCharacters": false,
     "files.associations": {
-      "int32.h": "c"
+      "int32.h": "c",
+      "turret_command.h": "c",
+      "turret_status.h": "c"
     }
 }

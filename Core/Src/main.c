@@ -26,13 +26,13 @@
 /* USER CODE BEGIN Includes */
 #include <math.h>
 #include <proto_turret_interfaces/msg/turret_command.h>
+#include <proto_turret_interfaces/msg/turret_status.h>
 #include <rcl/error_handling.h>
 #include <rcl/rcl.h>
 #include <rclc/executor.h>
 #include <rclc/rclc.h>
 #include <rmw_microros/rmw_microros.h>
 #include <rmw_microxrcedds_c/config.h>
-#include <std_msgs/msg/float32.h>
 #include <std_msgs/msg/int32.h>
 #include <sys/time.h>
 #include <time.h>
@@ -51,6 +51,8 @@
 /* USER CODE BEGIN PD */
 
 #define LM75_TEMP_ADDRESS (0x48 << 1)
+#define AS5600_I2C_ADDR (0x36 << 1)  // 7-бит адрес AS5600
+#define AS5600_REG_ANGLE 0x0C        // угол: 2 байта (старший/младший байт)
 
 /* USER CODE END PD */
 
@@ -106,25 +108,29 @@ osMessageQueueId_t cmdQueueHandle;
 
 // Глобальные объекты micro-ROS (инициализация в Ros2Init)
 rcl_publisher_t
-    ros2_dummy_publisher;  // временный издатель Int32 на PID_TOPIC_STATUS
-
+    ros2_turret_status_publisher;  // издатель TurretStatus на PID_TOPIC_STATUS
 rcl_publisher_t
-    ros2_turret_temperature_publisher;  // издатель для датчика температуры
+    ros2_as5600_publisher;  // издатель std_msgs/Int32 на PID_TOPIC_AS5600
 
 rcl_subscription_t ros2_subscriber;  // подписчик TurretCommand на PID_TOPIC_CMD
 rclc_support_t ros2_support;         // init-options
 rcl_allocator_t ros2_allocator;      // аллокатор
 rcl_node_t ros2_node;                // нода "proto_turret_node"
 rclc_executor_t ros2_executor;       // исполнитель (spin_some)
-std_msgs__msg__Int32 ros2_temp_int_msg;  // сообщение для публикации
-std_msgs__msg__Float32
-    ros2_turret_temperature;  // данные о температуре турели, который я
-                              // отправляю в qt-ноду
+proto_turret_interfaces__msg__TurretStatus
+    ros2_turret_status;  // статус турели: концевики, температура, лазер,
+                         // вентилятор
 proto_turret_interfaces__msg__TurretCommand ros2_cmd_msg;  // входящая команда
+std_msgs__msg__Int32 as5600_raw_msg;  // сообщение с сырым углом AS5600
 
 static uint8_t is_lm75_present = 0;  // подключен ли датчик температуры
 static uint32_t temperature_publish_timestamp = 0;
 static uint32_t temperature_publish_errors = 0;
+static uint8_t last_switch_mask = 0;
+static uint8_t last_laser_enable = 0;
+static uint8_t last_fan_enable = 0;
+static uint32_t last_publish_ms = 0;
+static uint32_t last_temp_read_ms = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -203,24 +209,82 @@ float lm75_read_temperature(void) {
 }
 
 /*
-ф-ция для отправки температуры в ROS-ноду
+чтение угла с энкодера AS5600 по шине I2C1
+возвращает 0..4095 (12 бит) или -1, если датчик не ответил (I2C-ошибка)
+*/
+int16_t as5600_read_angle(void) {
+  uint8_t buffer[2];
+
+  // читаем 2 байта угла начиная с регистра 0x0C (старший байт)
+  HAL_StatusTypeDef status =
+      HAL_I2C_Mem_Read(&hi2c1, AS5600_I2C_ADDR, AS5600_REG_ANGLE,
+                       I2C_MEMADD_SIZE_8BIT, buffer, 2, 50);
+
+  if (status != HAL_OK) {
+    return -1;
+  }
+
+  // объединяем байты в 16 бит, реальные данные — в старших 12 битах
+  return (int16_t)(((buffer[0] << 8) | buffer[1]) >> 4);
+}
+
+/*
+ф-ция для отправки данных турели в ROS-ноду:
+концевики (маска), температура, состояние лазера и вентилятора
 */
 
-void publish_temperature() {
+void publish_turret_data() {
   uint32_t now = HAL_GetTick();
-  if ((uint32_t)(now - temperature_publish_timestamp) < 1000u) {
+
+  // Концевики: внешние подтяжки к +3.3В, поэтому нажат (замкнут на GND) = LOW.
+  // Бит маски = 1 при нажатии.
+  uint8_t mask = 0;
+  mask |= (HAL_GPIO_ReadPin(SWITCH_HOR_LEFT_GPIO_Port, SWITCH_HOR_LEFT_Pin) ==
+           GPIO_PIN_RESET)
+          << 0;
+  mask |= (HAL_GPIO_ReadPin(SWITCH_HOR_RIGHT_GPIO_Port, SWITCH_HOR_RIGHT_Pin) ==
+           GPIO_PIN_RESET)
+          << 1;
+  mask |= (HAL_GPIO_ReadPin(SWITCH_VERT_FRONT_GPIO_Port,
+                            SWITCH_VERT_FRONT_Pin) == GPIO_PIN_RESET)
+          << 2;
+  mask |= (HAL_GPIO_ReadPin(SWITCH_VERT_REAR_GPIO_Port, SWITCH_VERT_REAR_Pin) ==
+           GPIO_PIN_RESET)
+          << 3;
+
+  // Состояние лазера и вентилятора читаем прямо с пинов
+  uint8_t laser =
+      (HAL_GPIO_ReadPin(LASER_GPIO_Port, LASER_Pin) == GPIO_PIN_SET);
+  uint8_t fan = (HAL_GPIO_ReadPin(FAN_GPIO_Port, FAN_Pin) == GPIO_PIN_SET);
+
+  // Публикуем сразу при изменении состояния (мгновенная реакция на
+  // концевики), в покое — heartbeat раз в 1 сек.
+  bool changed = (mask != last_switch_mask) || (laser != last_laser_enable) ||
+                 (fan != last_fan_enable);
+  bool heartbeat = ((uint32_t)(now - last_publish_ms) >= 1000u);
+  if (!changed && !heartbeat) {
     return;
   }
-  temperature_publish_timestamp = now;
+  last_switch_mask = mask;
+  last_laser_enable = laser;
+  last_fan_enable = fan;
+  last_publish_ms = now;
 
-  is_lm75_present =
-      (HAL_I2C_IsDeviceReady(&hi2c3, LM75_TEMP_ADDRESS, 3, 100) == HAL_OK);
+  // Температуру (I2C) перечитываем только раз в 1 сек, чтобы не грузить шину
+  if ((uint32_t)(now - last_temp_read_ms) >= 1000u) {
+    last_temp_read_ms = now;
+    is_lm75_present =
+        (HAL_I2C_IsDeviceReady(&hi2c3, LM75_TEMP_ADDRESS, 3, 100) == HAL_OK);
+    ros2_turret_status.temperature =
+        is_lm75_present ? lm75_read_temperature() : -1000.0f;
+  }
 
-  ros2_turret_temperature.data =
-      is_lm75_present ? lm75_read_temperature() : -1000.0f;
+  ros2_turret_status.switch_mask = mask;
+  ros2_turret_status.laser_enable = (laser != 0);
+  ros2_turret_status.fan_enable = (fan != 0);
 
-  if (rcl_publish(&ros2_turret_temperature_publisher, &ros2_turret_temperature,
-                  NULL) != RCL_RET_OK) {
+  if (rcl_publish(&ros2_turret_status_publisher, &ros2_turret_status, NULL) !=
+      RCL_RET_OK) {
     ++temperature_publish_errors;
   }
 }
@@ -798,22 +862,25 @@ bool Ros2Init(void) {
   }
 
   // 5. Создаём издателя — publisher (отправитель сообщений).
-  //   Издаёт (публикует) в топик PID_TOPIC_STATUS (сейчас заглушка — Int32).
-  //   Пока шлём просто счётчик, потом будет статус мотора/лазера.
+  //   Публикует статус турели (концевики, температура, лазер, вентилятор)
+  //   в топик PID_TOPIC_STATUS.
   if (rclc_publisher_init_default(
-          &ros2_dummy_publisher, &ros2_node,
-          ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+          &ros2_turret_status_publisher, &ros2_node,
+          ROSIDL_GET_MSG_TYPE_SUPPORT(proto_turret_interfaces, msg,
+                                      TurretStatus),
           PID_TOPIC_STATUS) != RCL_RET_OK) {
     return false;
   }
 
-  // Издатель для показаний температуры
+  // 5.1. Отдельный издатель для отладки энкодера AS5600.
+  //   Публикует сырой угол (0..4095) в топик PID_TOPIC_AS5600 каждый цикл.
   if (rclc_publisher_init_default(
-          &ros2_turret_temperature_publisher, &ros2_node,
-          ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
-          PID_TOPIC_TEMPERATURE) != RCL_RET_OK) {
+          &ros2_as5600_publisher, &ros2_node,
+          ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+          PID_TOPIC_AS5600) != RCL_RET_OK) {
     return false;
   }
+  std_msgs__msg__Int32__init(&as5600_raw_msg);
 
   // 6. Создаём подписчика — subscriber (приёмщик сообщений).
   //   Подписывается на топик PID_TOPIC_CMD — принимает TurretCommand от Qt.
@@ -921,8 +988,8 @@ void Ros2TaskExecutor(void* argument) {
 // Не зависит от Ros2Init() и не блокирует defaultTask (ROS).
 void MotorTestTask(void* argument) {
   for (;;) {
-    testMotor();
-    osDelay(300);
+    // testMotor();
+    osDelay(100);
   }
 }
 
@@ -966,27 +1033,12 @@ void StartDefaultTask(void* argument) {
     // Если пришло — вызывает cmd_callback (кладёт сообщение в очередь).
     rclc_executor_spin_some(&ros2_executor, 10);
 
-    // опубликовать в ноду температуру
-    publish_temperature();
+    // опубликовать в ноду статус турели
+    publish_turret_data();
 
-    // // проверка зажигания led если включается концевик
-    // uint8_t h_left =
-    //     HAL_GPIO_ReadPin(SWITCH_HOR_LEFT_GPIO_Port, SWITCH_HOR_LEFT_Pin);
-
-    // uint8_t h_right =
-    //     HAL_GPIO_ReadPin(SWITCH_HOR_RIGHT_GPIO_Port, SWITCH_HOR_RIGHT_Pin);
-    // // проверка зажигания led если включается концевик
-    // uint8_t v_front =
-    //     HAL_GPIO_ReadPin(SWITCH_VERT_FRONT_GPIO_Port, SWITCH_VERT_FRONT_Pin);
-
-    // uint8_t v_rear =
-    //     HAL_GPIO_ReadPin(SWITCH_VERT_FRONT_GPIO_Port, SWITCH_VERT_REAR_Pin);
-
-    // uint8_t res =
-    //     h_left & h_right & v_front & v_rear;  // 0b00000001 & 0b00000001
-    // if (res == 0) {
-    //   led_blink(1);
-    // }
+    // отладка энкодера: шлём сырой угол AS5600 в топик
+    as5600_raw_msg.data = as5600_read_angle();
+    rcl_publish(&ros2_as5600_publisher, &as5600_raw_msg, NULL);
 
     osDelay(10);
   }
