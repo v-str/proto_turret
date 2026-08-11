@@ -94,6 +94,13 @@ const osThreadAttr_t ros2TaskExecutor_attributes = {
     .priority = (osPriority_t)osPriorityNormal,
 };
 
+osThreadId_t motorTestTaskHandle;
+const osThreadAttr_t motorTestTask_attributes = {
+    .name = "motorTest",
+    .stack_size = 1024 * 4,
+    .priority = (osPriority_t)osPriorityLow,
+};
+
 // Очередь: Reader → Executor (TurretCommand)
 osMessageQueueId_t cmdQueueHandle;
 
@@ -116,7 +123,8 @@ std_msgs__msg__Float32
 proto_turret_interfaces__msg__TurretCommand ros2_cmd_msg;  // входящая команда
 
 static uint8_t is_lm75_present = 0;  // подключен ли датчик температуры
-static uint32_t temperature_ticks = 0;
+static uint32_t temperature_publish_timestamp = 0;
+static uint32_t temperature_publish_errors = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -135,6 +143,7 @@ void StartDefaultTask(void* argument);
 /* USER CODE BEGIN PFP */
 bool Ros2Init(void);
 void Ros2TaskExecutor(void* argument);
+void MotorTestTask(void* argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -161,9 +170,10 @@ void led_blink(int count) {
   for (int i = 0; i < count; i++) {
     // HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
-    osDelay(500);
+    osDelay(100);
     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
   }
+  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
 }
 
 /*
@@ -197,27 +207,58 @@ float lm75_read_temperature(void) {
 */
 
 void publish_temperature() {
-  // проверяем датчик температуры
+  uint32_t now = HAL_GetTick();
+  if ((uint32_t)(now - temperature_publish_timestamp) < 1000u) {
+    return;
+  }
+  temperature_publish_timestamp = now;
+
   is_lm75_present =
       (HAL_I2C_IsDeviceReady(&hi2c3, LM75_TEMP_ADDRESS, 3, 100) == HAL_OK);
 
-  if (is_lm75_present) {
-    if (temperature_ticks % 50 == 0) {
-      ros2_turret_temperature.data = lm75_read_temperature();
-      if (rcl_publish(&ros2_turret_temperature_publisher,
-                      &ros2_turret_temperature, NULL) != RCL_RET_OK) {
-        led_blink(10);
-      }
-    }
-  } else {
-    ros2_turret_temperature.data = -1000.0f;
-    if (rcl_publish(&ros2_turret_temperature_publisher,
-                    &ros2_turret_temperature, NULL) != RCL_RET_OK) {
-      led_blink(10);
-    }
+  ros2_turret_temperature.data =
+      is_lm75_present ? lm75_read_temperature() : -1000.0f;
+
+  if (rcl_publish(&ros2_turret_temperature_publisher, &ros2_turret_temperature,
+                  NULL) != RCL_RET_OK) {
+    ++temperature_publish_errors;
+  }
+}
+
+void testMotor(void) {
+  // // Включаем оба мотора (EN = LOW)
+  HAL_GPIO_WritePin(M1_EN_GPIO_Port, M1_EN_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(M2_EN_GPIO_Port, M2_EN_Pin, GPIO_PIN_RESET);
+
+  // --- Направление: сначала влево (RESET) ---
+  HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_RESET);
+
+  // --- ВЛЕВО 5 секунд ---
+  HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_RESET);
+
+  for (int i = 0; i < 3000; i++) {
+    HAL_GPIO_WritePin(M1_STEP_GPIO_Port, M1_STEP_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(M2_STEP_GPIO_Port, M2_STEP_Pin, GPIO_PIN_SET);
+    osDelay(1);
+    HAL_GPIO_WritePin(M1_STEP_GPIO_Port, M1_STEP_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(M2_STEP_GPIO_Port, M2_STEP_Pin, GPIO_PIN_RESET);
+    osDelay(1);
   }
 
-  ++temperature_ticks;
+  // --- ВПРАВО 5 секунд ---
+  HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_SET);
+
+  for (int i = 0; i < 3000; i++) {
+    HAL_GPIO_WritePin(M1_STEP_GPIO_Port, M1_STEP_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(M2_STEP_GPIO_Port, M2_STEP_Pin, GPIO_PIN_SET);
+    osDelay(1);
+    HAL_GPIO_WritePin(M1_STEP_GPIO_Port, M1_STEP_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(M2_STEP_GPIO_Port, M2_STEP_Pin, GPIO_PIN_RESET);
+    osDelay(1);
+  }
 }
 
 /* USER CODE END 0 */
@@ -291,6 +332,8 @@ int main(void) {
   /* USER CODE BEGIN RTOS_THREADS */
   ros2TaskExecutorHandle =
       osThreadNew(Ros2TaskExecutor, NULL, &ros2TaskExecutor_attributes);
+  motorTestTaskHandle =
+      osThreadNew(MotorTestTask, NULL, &motorTestTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -852,7 +895,7 @@ void Ros2TaskExecutor(void* argument) {
         // Определяем направление:
         // pan_vel > 0 (мышь вправо)  → dir = 1 (CW — по часовой)
         // pan_vel < 0 (мышь влево)   → dir = 0 (CCW — против часовой)
-        int dir = cmd.pan_vel > 0.0f ? 1 : 0;
+        // int dir = cmd.pan_vel > 0.0f ? 1 : 0;
 
         // Запускаем мотор на 10 000 000 шагов.
         // Это просто "очень много" — условно бесконечно.
@@ -873,17 +916,40 @@ void Ros2TaskExecutor(void* argument) {
   }
 }
 
+// MotorTestTask — отдельный низкоприоритетный поток для проверки моторов.
+// Крутит M1 и M2 влево/вправо по 1000 шагов в бесконечном цикле.
+// Не зависит от Ros2Init() и не блокирует defaultTask (ROS).
+void MotorTestTask(void* argument) {
+  for (;;) {
+    testMotor();
+    osDelay(300);
+  }
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
 /**
- * @brief  Function implementing the defaultTask thread.
- * @param  argument: Not used
- * @retval None
+ * @brief  Поток для отправки данных из stm32-ноды в dds
+ * @param  no
+ * @retval no
  */
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void* argument) {
   /* USER CODE BEGIN 5 */
+
+  // Настраиваем транспорт (USART2 DMA) заранее — он нужен для ping.
+  rmw_uros_set_custom_transport(true, (void*)&huart2, cubemx_transport_open,
+                                cubemx_transport_close, cubemx_transport_write,
+                                cubemx_transport_read);
+
+  // Ждём, пока micro-ROS агент станет доступен. Плата в коробе, кнопку Reset
+  // не нажать — поэтому перезагружать её не нужно, просто опрашиваем агента
+  // до тех пор, пока он не появится.
+  while (rmw_uros_ping_agent(100, 3) != RMW_RET_OK) {
+    led_blink(9);
+    osDelay(2000);
+  }
 
   if (!Ros2Init()) {
     while (1) {
@@ -892,6 +958,7 @@ void StartDefaultTask(void* argument) {
     }
   }
 
+  // выключаем вентилятор
   HAL_GPIO_WritePin(FAN_GPIO_Port, FAN_Pin, GPIO_PIN_RESET);
 
   for (;;) {
@@ -901,6 +968,25 @@ void StartDefaultTask(void* argument) {
 
     // опубликовать в ноду температуру
     publish_temperature();
+
+    // // проверка зажигания led если включается концевик
+    // uint8_t h_left =
+    //     HAL_GPIO_ReadPin(SWITCH_HOR_LEFT_GPIO_Port, SWITCH_HOR_LEFT_Pin);
+
+    // uint8_t h_right =
+    //     HAL_GPIO_ReadPin(SWITCH_HOR_RIGHT_GPIO_Port, SWITCH_HOR_RIGHT_Pin);
+    // // проверка зажигания led если включается концевик
+    // uint8_t v_front =
+    //     HAL_GPIO_ReadPin(SWITCH_VERT_FRONT_GPIO_Port, SWITCH_VERT_FRONT_Pin);
+
+    // uint8_t v_rear =
+    //     HAL_GPIO_ReadPin(SWITCH_VERT_FRONT_GPIO_Port, SWITCH_VERT_REAR_Pin);
+
+    // uint8_t res =
+    //     h_left & h_right & v_front & v_rear;  // 0b00000001 & 0b00000001
+    // if (res == 0) {
+    //   led_blink(1);
+    // }
 
     osDelay(10);
   }
