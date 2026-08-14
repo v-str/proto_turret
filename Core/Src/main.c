@@ -33,7 +33,9 @@
 #include <rclc/rclc.h>
 #include <rmw_microros/rmw_microros.h>
 #include <rmw_microxrcedds_c/config.h>
+#include <rosidl_runtime_c/primitives_sequence_functions.h>
 #include <std_msgs/msg/int32.h>
+#include <std_msgs/msg/int32_multi_array.h>
 #include <sys/time.h>
 #include <time.h>
 #include <uxr/client/transport.h>
@@ -53,6 +55,7 @@
 #define LM75_TEMP_ADDRESS (0x48 << 1)
 #define AS5600_I2C_ADDR (0x36 << 1)  // 7-бит адрес AS5600
 #define AS5600_REG_ANGLE 0x0C        // угол: 2 байта (старший/младший байт)
+#define MOTOR_TEST_DELAY (2)
 
 /* USER CODE END PD */
 
@@ -100,7 +103,9 @@ osThreadId_t motorTestTaskHandle;
 const osThreadAttr_t motorTestTask_attributes = {
     .name = "motorTest",
     .stack_size = 1024 * 4,
-    .priority = (osPriority_t)osPriorityLow,
+    // Normal — равный приоритет с defaultTask: time-slicing даёт мотору
+    // регулярные срезы времени, даже пока ROS-поток висит в блокирующем I2C.
+    .priority = (osPriority_t)osPriorityNormal,
 };
 
 // Очередь: Reader → Executor (TurretCommand)
@@ -121,7 +126,8 @@ proto_turret_interfaces__msg__TurretStatus
     ros2_turret_status;  // статус турели: концевики, температура, лазер,
                          // вентилятор
 proto_turret_interfaces__msg__TurretCommand ros2_cmd_msg;  // входящая команда
-std_msgs__msg__Int32 as5600_raw_msg;  // сообщение с сырым углом AS5600
+std_msgs__msg__Int32MultiArray
+    as5600_raw_msg;  // массив с сырыми углами AS5600 [M1, M2]
 
 static uint8_t is_lm75_present = 0;  // подключен ли датчик температуры
 static uint32_t temperature_publish_timestamp = 0;
@@ -209,23 +215,86 @@ float lm75_read_temperature(void) {
 }
 
 /*
-чтение угла с энкодера AS5600 по шине I2C1
-возвращает 0..4095 (12 бит) или -1, если датчик не ответил (I2C-ошибка)
+чтение угла с энкодера AS5600 по шине I2C
+возвращает 0..4095 (12 бит) или код ошибки:
+  -1 = HAL_ERROR  — устройство не ответило (нет ACK)
+  -2 = HAL_TIMEOUT — шина зависла, обмен не завершился за таймаут
+  -3 = HAL_BUSY    — периферия занята
 */
-int16_t as5600_read_angle(void) {
-  uint8_t buffer[2];
+int16_t as5600_read_angle_bus(I2C_HandleTypeDef* hi2c) {
+  HAL_StatusTypeDef status = HAL_ERROR;
 
-  // читаем 2 байта угла начиная с регистра 0x0C (старший байт)
-  HAL_StatusTypeDef status =
-      HAL_I2C_Mem_Read(&hi2c1, AS5600_I2C_ADDR, AS5600_REG_ANGLE,
-                       I2C_MEMADD_SIZE_8BIT, buffer, 2, 50);
+  // Ретраи: на движущейся турели бывают помехи на шине, и чтение может
+  // срываться. Пробуем до 3 раз, сбрасывая периферию между попытками.
+  for (int attempt = 0; attempt < 3; attempt++) {
+    // Если периферия зависла в BUSY после сбоя — сбрасываем её, иначе все
+    // последующие чтения будут возвращать HAL_BUSY навсегда.
+    if (HAL_I2C_GetState(hi2c) != HAL_I2C_STATE_READY) {
+      HAL_I2C_DeInit(hi2c);
+      HAL_I2C_Init(hi2c);
+    }
 
-  if (status != HAL_OK) {
-    return -1;
+    uint8_t buffer[2];
+
+    // читаем 2 байта угла начиная с регистра 0x0C (старший байт)
+    status = HAL_I2C_Mem_Read(hi2c, AS5600_I2C_ADDR, AS5600_REG_ANGLE,
+                              I2C_MEMADD_SIZE_8BIT, buffer, 2, 50);
+
+    if (status == HAL_OK) {
+      // объединяем байты в 16 бит, реальные данные — в старших 12 битах
+      return (int16_t)(((buffer[0] << 8) | buffer[1]) >> 4);
+    }
+
+    // неудача — восстанавливаем периферию и пробуем снова
+    HAL_I2C_DeInit(hi2c);
+    HAL_I2C_Init(hi2c);
+    osDelay(1);
   }
 
-  // объединяем байты в 16 бит, реальные данные — в старших 12 битах
-  return (int16_t)(((buffer[0] << 8) | buffer[1]) >> 4);
+  // все попытки провалились — возвращаем код ошибки
+  if (status == HAL_ERROR) return -1;
+  if (status == HAL_TIMEOUT) return -2;
+  if (status == HAL_BUSY) return -3;
+  return -4;  // другой код
+}
+
+// энкодер M1 (горизонталь) на шине I2C1
+int16_t as5600_read_angle(void) { return as5600_read_angle_bus(&hi2c1); }
+
+// энкодер M2 (вертикаль) на шине I2C2
+int16_t as5600_read_angle2(void) { return as5600_read_angle_bus(&hi2c2); }
+
+/*
+фильтр скачков значения энкодера (12-бит, диапазон 0..4095).
+Моторные помехи дают мусорные чтения — если значение скакнуло больше чем на
+ENC_JUMP_MAX от предыдущего (с учётом обёртки 4095->0), считаем его мусором и
+возвращаем последнее достоверное.
+last — указатель на последнее достоверное значение (инициализировать -1).
+*/
+int16_t filter_encoder_value(int16_t raw, int16_t* last) {
+#define ENC_JUMP_MAX 200
+
+  if (raw < 0) {
+    return *last < 0 ? -1 : *last;
+  }
+  if (*last < 0) {
+    *last = raw;
+    return raw;
+  }
+
+  // минимальное расстояние по кругу 0..4095
+  int diff = raw - *last;
+  if (diff > 2048) diff -= 4096;
+  if (diff < -2048) diff += 4096;
+  if (diff < 0) diff = -diff;
+
+  if (diff <= ENC_JUMP_MAX) {
+    *last = raw;
+    return raw;
+  }
+  return *last;  // мусор — держим последнее достоверное
+
+#undef ENC_JUMP_MAX
 }
 
 /*
@@ -289,40 +358,38 @@ void publish_turret_data() {
   }
 }
 
-void testMotor(void) {
-  // // Включаем оба мотора (EN = LOW)
-  HAL_GPIO_WritePin(M1_EN_GPIO_Port, M1_EN_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(M2_EN_GPIO_Port, M2_EN_Pin, GPIO_PIN_RESET);
-
-  // --- Направление: сначала влево (RESET) ---
-  HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_RESET);
-
-  // --- ВЛЕВО 5 секунд ---
-  HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_RESET);
-
-  for (int i = 0; i < 3000; i++) {
-    HAL_GPIO_WritePin(M1_STEP_GPIO_Port, M1_STEP_Pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(M2_STEP_GPIO_Port, M2_STEP_Pin, GPIO_PIN_SET);
-    osDelay(1);
-    HAL_GPIO_WritePin(M1_STEP_GPIO_Port, M1_STEP_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(M2_STEP_GPIO_Port, M2_STEP_Pin, GPIO_PIN_RESET);
-    osDelay(1);
+// прошагать ровно steps шагов без проверки концевиков
+void step_motor(GPIO_TypeDef* step_port, uint16_t step_pin, uint32_t steps) {
+  for (uint32_t i = 0; i < steps; i++) {
+    HAL_GPIO_WritePin(step_port, step_pin, GPIO_PIN_SET);
+    osDelay(MOTOR_TEST_DELAY);
+    HAL_GPIO_WritePin(step_port, step_pin, GPIO_PIN_RESET);
+    osDelay(MOTOR_TEST_DELAY);
   }
+}
 
-  // --- ВПРАВО 5 секунд ---
-  HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_SET);
-
-  for (int i = 0; i < 3000; i++) {
+uint32_t testMotorHorizontal(GPIO_TypeDef* stop_port, uint16_t stop_pin) {
+  uint32_t steps = 0;
+  while (HAL_GPIO_ReadPin(stop_port, stop_pin) != GPIO_PIN_RESET) {
     HAL_GPIO_WritePin(M1_STEP_GPIO_Port, M1_STEP_Pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(M2_STEP_GPIO_Port, M2_STEP_Pin, GPIO_PIN_SET);
-    osDelay(1);
+    osDelay(MOTOR_TEST_DELAY);
     HAL_GPIO_WritePin(M1_STEP_GPIO_Port, M1_STEP_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(M2_STEP_GPIO_Port, M2_STEP_Pin, GPIO_PIN_RESET);
-    osDelay(1);
+    osDelay(MOTOR_TEST_DELAY);
+    steps++;
   }
+  return steps;
+}
+
+uint32_t testMotorVertical(GPIO_TypeDef* stop_port, uint16_t stop_pin) {
+  uint32_t steps = 0;
+  while (HAL_GPIO_ReadPin(stop_port, stop_pin) != GPIO_PIN_RESET) {
+    HAL_GPIO_WritePin(M2_STEP_GPIO_Port, M2_STEP_Pin, GPIO_PIN_SET);
+    osDelay(MOTOR_TEST_DELAY);
+    HAL_GPIO_WritePin(M2_STEP_GPIO_Port, M2_STEP_Pin, GPIO_PIN_RESET);
+    osDelay(MOTOR_TEST_DELAY);
+    steps++;
+  }
+  return steps;
 }
 
 /* USER CODE END 0 */
@@ -872,15 +939,17 @@ bool Ros2Init(void) {
     return false;
   }
 
-  // 5.1. Отдельный издатель для отладки энкодера AS5600.
-  //   Публикует сырой угол (0..4095) в топик PID_TOPIC_AS5600 каждый цикл.
+  // 5.1. Отдельный издатель для отладки энкодеров AS5600.
+  //   Публикует сырые углы обоих энкодеров [M1, M2] в топик PID_TOPIC_AS5600
+  //   каждый цикл.
   if (rclc_publisher_init_default(
           &ros2_as5600_publisher, &ros2_node,
-          ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+          ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32MultiArray),
           PID_TOPIC_AS5600) != RCL_RET_OK) {
     return false;
   }
-  std_msgs__msg__Int32__init(&as5600_raw_msg);
+  std_msgs__msg__Int32MultiArray__init(&as5600_raw_msg);
+  rosidl_runtime_c__int32__Sequence__init(&as5600_raw_msg.data, 2);
 
   // 6. Создаём подписчика — subscriber (приёмщик сообщений).
   //   Подписывается на топик PID_TOPIC_CMD — принимает TurretCommand от Qt.
@@ -946,8 +1015,8 @@ void Ros2TaskExecutor(void* argument) {
       // Управление лазером:
       // cmd.laser_enable=true  → ставим HIGH (лазер горит)
       // cmd.laser_enable=false → ставим LOW  (лазер выключен)
-      HAL_GPIO_WritePin(LASER_GPIO_Port, LASER_Pin,
-                        cmd.laser_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
+      // HAL_GPIO_WritePin(LASER_GPIO_Port, LASER_Pin,
+      //                   cmd.laser_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
       // Управление вентилятором:
       HAL_GPIO_WritePin(FAN_GPIO_Port, FAN_Pin,
@@ -984,12 +1053,43 @@ void Ros2TaskExecutor(void* argument) {
 }
 
 // MotorTestTask — отдельный низкоприоритетный поток для проверки моторов.
-// Крутит M1 и M2 влево/вправо по 1000 шагов в бесконечном цикле.
 // Не зависит от Ros2Init() и не блокирует defaultTask (ROS).
 void MotorTestTask(void* argument) {
+  HAL_GPIO_WritePin(M1_EN_GPIO_Port, M1_EN_Pin, GPIO_PIN_RESET);  // включить M1
+  HAL_GPIO_WritePin(M2_EN_GPIO_Port, M2_EN_Pin, GPIO_PIN_RESET);  // включить M2
+
   for (;;) {
-    // testMotor();
-    osDelay(100);
+    // ---------- ГОРИЗОНТАЛЬ ----------
+    HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_RESET);
+    testMotorHorizontal(SWITCH_HOR_LEFT_GPIO_Port,
+                        SWITCH_HOR_LEFT_Pin);  // полный ход ВЛЕВО до концевика
+    osDelay(1000);
+
+    HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_SET);
+    uint32_t hor_step =
+        testMotorHorizontal(SWITCH_HOR_RIGHT_GPIO_Port,
+                            SWITCH_HOR_RIGHT_Pin);  // полный ход ВПРАВО (замер)
+    osDelay(1000);
+
+    HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_RESET);
+    step_motor(M1_STEP_GPIO_Port, M1_STEP_Pin, hor_step / 2);  // выход в центр
+    osDelay(1000);
+
+    // ---------- ВЕРТИКАЛЬ ----------
+    HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_RESET);
+    testMotorVertical(SWITCH_VERT_FRONT_GPIO_Port,
+                      SWITCH_VERT_FRONT_Pin);  // полный ход до FRONT
+    osDelay(1000);
+
+    HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_SET);
+    uint32_t vert_step =
+        testMotorVertical(SWITCH_VERT_REAR_GPIO_Port,
+                          SWITCH_VERT_REAR_Pin);  // полный ход до REAR (замер)
+    osDelay(1000);
+
+    HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_RESET);
+    step_motor(M2_STEP_GPIO_Port, M2_STEP_Pin, vert_step / 2);  // выход в центр
+    osDelay(1000);
   }
 }
 
@@ -1036,8 +1136,16 @@ void StartDefaultTask(void* argument) {
     // опубликовать в ноду статус турели
     publish_turret_data();
 
-    // отладка энкодера: шлём сырой угол AS5600 в топик
-    as5600_raw_msg.data = as5600_read_angle();
+    // отладка энкодеров: шлём сырые углы AS5600 [M1, M2] в топик.
+    // Моторные помехи дают редкие мусорные чтения — отфильтровываем скачки,
+    // публикуем последнее достоверное значение.
+    static int16_t last_enc1 = -1, last_enc2 = -1;
+    int16_t e1 = as5600_read_angle();
+    int16_t e2 = as5600_read_angle2();
+    e1 = filter_encoder_value(e1, &last_enc1);
+    e2 = filter_encoder_value(e2, &last_enc2);
+    as5600_raw_msg.data.data[0] = e1;  // M1 — горизонталь
+    as5600_raw_msg.data.data[1] = e2;  // M2 — вертикаль
     rcl_publish(&ros2_as5600_publisher, &as5600_raw_msg, NULL);
 
     osDelay(10);
