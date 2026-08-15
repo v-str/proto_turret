@@ -55,7 +55,7 @@
 #define LM75_TEMP_ADDRESS (0x48 << 1)
 #define AS5600_I2C_ADDR (0x36 << 1)  // 7-бит адрес AS5600
 #define AS5600_REG_ANGLE 0x0C        // угол: 2 байта (старший/младший байт)
-#define MOTOR_TEST_DELAY (2)
+#define MOTOR_TEST_DELAY (20)
 
 /* USER CODE END PD */
 
