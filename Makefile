@@ -40,6 +40,7 @@ Core/Src/main.c \
 Core/Src/freertos.c \
 Core/Src/motor_control.c \
 Core/Src/sensors.c \
+Core/Src/transport.c \
 Core/Src/turret_init.c \
 Core/Src/turret_tasks.c \
 Core/Src/stm32f4xx_it.c \

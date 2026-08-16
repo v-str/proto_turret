@@ -1,15 +1,15 @@
-#ifndef TASKS_H
-#define TASKS_H
+#ifndef TURRET_TASKS_H
+#define TURRET_TASKS_H
 
 #include "cmsis_os.h"
-#include "main.h"
-#include "motor_control.h"
-#include "sensors.h"
 
-// Создаёт очередь команд и все три потока. Вызывается из main до osKernelStart.
-// ВАЖНО: здесь пока временно живёт и «транспорт» (micro-ROS) — см. turret_tasks.c.
-// При создании transport.c/.h он переедет туда, а задачи будут лишь вызывать
-// его функции.
+// Очередь команд TurretCommand: создаётся в TasksInit, transport.c
+// (cmd_callback) кладёт в неё команды, поток Ros2TaskExecutor забирает.
+extern osMessageQueueId_t cmdQueueHandle;
+
+// Создаёт очередь команд и все три потока (defaultTask, ros2TaskExecutor,
+// motorTest). Вызывается из turret_init() после osKernelInitialize
+// и до osKernelStart.
 void TasksInit(void);
 
-#endif  // TASKS_H
+#endif  // TURRET_TASKS_H
