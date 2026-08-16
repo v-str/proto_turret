@@ -49,8 +49,7 @@ static rcl_allocator_t ros2_allocator;      // аллокатор
 static rcl_node_t ros2_node;                // нода "proto_turret_node"
 static rclc_executor_t ros2_executor;       // исполнитель (spin_some)
 static proto_turret_interfaces__msg__TurretStatus
-    ros2_turret_status;  // статус турели: концевики, температура, лазер,
-                         // вентилятор
+    ros2_turret_status;  // статус турели: концевики, температура, вентилятор
 static proto_turret_interfaces__msg__TurretCommand
     ros2_cmd_msg;  // входящая команда (сюда кладёт подписчик)
 static std_msgs__msg__Int32MultiArray
@@ -60,7 +59,6 @@ static std_msgs__msg__Int32MultiArray
 static uint8_t is_lm75_present = 0;  // подключен ли датчик температуры
 static uint32_t temperature_publish_errors = 0;
 static uint8_t last_switch_mask = 0;  // для фильтрации
-static uint8_t last_laser_enable = 0;
 static uint8_t last_fan_enable = 0;
 static uint32_t last_publish_ms = 0;
 static uint32_t last_temp_read_ms = 0;
@@ -150,7 +148,7 @@ bool transport_init(void) {
     return false;
   }
 
-  // 5. Издатель статуса турели: концевики, температура, лазер, вентилятор
+  // 5. Издатель статуса турели: концевики, температура, вентилятор
   //   → топик PID_TOPIC_STATUS.
   if (rclc_publisher_init_default(
           &ros2_turret_status_publisher, &ros2_node,
@@ -206,7 +204,7 @@ bool transport_init(void) {
 // cmd_callback, и команда окажется в очереди cmdQueueHandle.
 void transport_spin_some(void) { rclc_executor_spin_some(&ros2_executor, 10); }
 
-// Публикация статуса турели: концевики (маска), температура, лазер, вентилятор.
+// Публикация статуса турели: концевики (маска), температура, вентилятор.
 // Публикуем сразу при изменении состояния (мгновенная реакция на концевики),
 // в покое — heartbeat раз в 1 секунду.
 void transport_publish_turret_data(void) {
@@ -228,20 +226,16 @@ void transport_publish_turret_data(void) {
            GPIO_PIN_RESET)
           << 3;
 
-  // Состояние лазера и вентилятора читаем прямо с пинов
-  uint8_t laser =
-      (HAL_GPIO_ReadPin(LASER_GPIO_Port, LASER_Pin) == GPIO_PIN_SET);
+  // Состояние вентилятора читаем прямо с пина
   uint8_t fan = (HAL_GPIO_ReadPin(FAN_GPIO_Port, FAN_Pin) == GPIO_PIN_SET);
 
   // Публикуем, если состояние изменилось, либо раз в 1 сек (heartbeat)
-  bool changed = (mask != last_switch_mask) || (laser != last_laser_enable) ||
-                 (fan != last_fan_enable);
+  bool changed = (mask != last_switch_mask) || (fan != last_fan_enable);
   bool heartbeat = ((uint32_t)(now - last_publish_ms) >= 1000u);
   if (!changed && !heartbeat) {
     return;
   }
   last_switch_mask = mask;
-  last_laser_enable = laser;
   last_fan_enable = fan;
   last_publish_ms = now;
 
@@ -254,7 +248,6 @@ void transport_publish_turret_data(void) {
   }
 
   ros2_turret_status.switch_mask = mask;
-  ros2_turret_status.laser_enable = (laser != 0);
   ros2_turret_status.fan_enable = (fan != 0);
 
   if (rcl_publish(&ros2_turret_status_publisher, &ros2_turret_status, NULL) !=

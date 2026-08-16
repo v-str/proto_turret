@@ -27,7 +27,7 @@ bool transport_init(void);
 void transport_spin_some(void);
 
 // Публикация статуса турели в топик PID_TOPIC_STATUS:
-// концевики (маска), температура, состояние лазера и вентилятора.
+// концевики (маска), температура, состояние вентилятора.
 void transport_publish_turret_data(void);
 
 // Публикация сырых углов энкодеров AS5600 [M1, M2] в топик PID_TOPIC_AS5600.

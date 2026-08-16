@@ -87,8 +87,6 @@ void Error_Handler(void);
 #define M1_DIR_GPIO_Port GPIOA
 #define M1_EN_Pin GPIO_PIN_11
 #define M1_EN_GPIO_Port GPIOA
-#define LASER_Pin GPIO_PIN_12
-#define LASER_GPIO_Port GPIOA
 #define TMS_Pin GPIO_PIN_13
 #define TMS_GPIO_Port GPIOA
 #define TCK_Pin GPIO_PIN_14

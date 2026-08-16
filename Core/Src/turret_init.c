@@ -62,7 +62,7 @@ static void MX_TIM11_Init(void);
 
 // ----------------------------------------------------------------------------
 // Инициализация пинов GPIO.
-// Выходы: управление шаговыми двигателями (STEP/DIR/EN), лазер, вентилятор.
+// Выходы: управление шаговыми двигателями (STEP/DIR/EN), вентилятор.
 // Входы: концевики осей (нажат = LOW, т.к. замкнуты на GND при подтяжке к +3.3В).
 // ----------------------------------------------------------------------------
 static void MX_GPIO_Init(void) {
@@ -75,10 +75,10 @@ static void MX_GPIO_Init(void) {
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   // Начальные уровни на выходах порта A (все в LOW):
-  // M2_EN, M1_STEP, M1_DIR, M1_EN, LASER
-  HAL_GPIO_WritePin(
-      GPIOA, M2_EN_Pin | M1_STEP_Pin | M1_DIR_Pin | M1_EN_Pin | LASER_Pin,
-      GPIO_PIN_RESET);
+  // M2_EN, M1_STEP, M1_DIR, M1_EN
+  HAL_GPIO_WritePin(GPIOA,
+                    M2_EN_Pin | M1_STEP_Pin | M1_DIR_Pin | M1_EN_Pin,
+                    GPIO_PIN_RESET);
 
   // Начальный уровень M2_DIR (порт C) — LOW
   HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_RESET);
@@ -86,9 +86,8 @@ static void MX_GPIO_Init(void) {
   // Начальные уровни на выходах порта B: M2_STEP, FAN — LOW
   HAL_GPIO_WritePin(GPIOB, M2_STEP_Pin | FAN_Pin, GPIO_PIN_RESET);
 
-  // Порт A — выходы: M2_EN, M1_STEP, M1_DIR, M1_EN, LASER
-  GPIO_InitStruct.Pin =
-      M2_EN_Pin | M1_STEP_Pin | M1_DIR_Pin | M1_EN_Pin | LASER_Pin;
+  // Порт A — выходы: M2_EN, M1_STEP, M1_DIR, M1_EN
+  GPIO_InitStruct.Pin = M2_EN_Pin | M1_STEP_Pin | M1_DIR_Pin | M1_EN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;  // push-pull
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -287,7 +286,7 @@ static void MX_TIM14_Init(void) {
 // ----------------------------------------------------------------------------
 void turret_init(void) {
   // --- Периферия ---
-  MX_GPIO_Init();           // пины: моторы, концевики, лазер, вентилятор
+  MX_GPIO_Init();           // пины: моторы, концевики, вентилятор
   MX_DMA_Init();            // DMA1 (RX/TX для USART2)
   MX_USART2_UART_Init();    // UART2 — канал micro-ROS
   MX_I2C1_Init();           // I2C1 — энкодер M1

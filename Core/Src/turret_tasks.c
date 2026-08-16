@@ -66,7 +66,7 @@ void led_blink(int count) {
 // -------------------------------------------------------------------
 void Ros2TaskExecutor(void* argument) {
   // Это будет наша переменная для ROS-сообщения.
-  // Qt заполняет поля: pan_pos, tilt_pos, pan_vel, tilt_vel, laser_enable
+  // Qt заполняет поля: pan_pos, tilt_pos, pan_vel, tilt_vel
   proto_turret_interfaces__msg__TurretCommand cmd;
 
   for (;;) {
@@ -84,12 +84,6 @@ void Ros2TaskExecutor(void* argument) {
       // ---------------------------------------------------------------
       // КОМАНДА ПРИШЛА
       // ---------------------------------------------------------------
-
-      // Управление лазером:
-      // cmd.laser_enable=true  → ставим HIGH (лазер горит)
-      // cmd.laser_enable=false → ставим LOW  (лазер выключен)
-      // HAL_GPIO_WritePin(LASER_GPIO_Port, LASER_Pin,
-      //                   cmd.laser_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
       // Управление вентилятором:
       HAL_GPIO_WritePin(FAN_GPIO_Port, FAN_Pin,
@@ -195,7 +189,7 @@ void StartDefaultTask(void* argument) {
     // проверить входящие команды от Qt (кладёт их в очередь команд)
     transport_spin_some();
 
-    // опубликовать статус турели: концевики, температура, лазер, вентилятор
+    // опубликовать статус турели: концевики, температура, вентилятор
     transport_publish_turret_data();
 
     // отладка энкодеров: сырые углы AS5600 [M1, M2] (с фильтром скачков)
