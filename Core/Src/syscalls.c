@@ -13,7 +13,7 @@
  * Copyright (c) 2020-2025 STMicroelectronics.
  * All rights reserved.
  *
- * This software is licensed under terms that can be found in the LICENSE file
+ * This software component is licensed under terms that can be found in the LICENSE file
  * in the root directory of this software component.
  * If no LICENSE file comes with this software, it is provided AS-IS.
  *
@@ -30,6 +30,59 @@
 #include <sys/time.h>
 #include <sys/times.h>
 
+// Для _gettimeofday / usleep (добавлены вручную, см. в конце файла)
+#include "main.h"      // HAL_GetTick — счётчик миллисекунд с момента старта
+#include "cmsis_os.h"  // osDelay — задержка потока RTOS в миллисекундах
+
+/*
+ * ============================================================================
+ * ЧТО ЭТО ЗА ФАЙЛ И КАК ОН УСТРОЕН
+ * ----------------------------------------------------------------------------
+ * Стандартная C-библиотека (newlib / picolibc), которую использует прошивка,
+ * ожидает, что на «голом» микроконтроллере (без операционной системы) ряд
+ * «системных» функций написан вручную. Без них линковщик упадёт с ошибкой
+ * "undefined reference to `_getpid'" и т.п.
+ *
+ * КЛЮЧЕВЫЕ ПОНЯТИЯ (все эти вещи встречаются ниже в коде):
+ *
+ * __attribute__((weak)) — «слабое» определение (weak symbol).
+ *   Если в проекте есть ОБЫЧНОЕ («сильное») определение этой же функции,
+ *   линковщик возьмёт его, а слабое проигнорирует. Это позволяет библиотеке
+ *   дать реализацию «по умолчанию», которую можно переопределить в своём коде
+ *   БЕЗ ошибки «повторное определение».
+ *   Пример: _read и _write объявлены weak — чтобы выводить текст в UART,
+ *   достаточно написать свою версию _write.
+ *
+ * extern — «эта переменная/функция определена в другом файле».
+ *   __io_putchar / __io_getchar определены где-то ещё (например, в
+ *   stm32f4xx_it.c). extern говорит компилятору: не создавай их здесь,
+ *   просто дай мне ими пользоваться.
+ *
+ * char **environ / __env — список переменных окружения (environment),
+ *   как переменные среды в Linux. Для прошивки он пустой:
+ *   __env[1] = { 0 } означает «массив из одного элемента-пустой строки»,
+ *   а указатель environ указывает на него.
+ *
+ * errno — глобальная переменная с кодом последней ошибки (из <errno.h>).
+ *   Системные функции при неудаче возвращают -1 и записывают сюда ПРИЧИНУ,
+ *   чтобы вызывающий код мог её прочитать (EINVAL, ENOMEM, ...).
+ *
+ * FILE / FDEV_SETUP_STREAM — стандартные потоки ввода-вывода picolibc.
+ *   FDEV_SETUP_STREAM «связывает» наши __io_putchar/__io_getchar с
+ *   FILE-структурой, чтобы printf("...") / scanf() работали через UART.
+ *   stdin/stdout/stderr — стандартные потоки, как в любом C-приложении.
+ *
+ * __strong_reference — макрос picolibc: «дай функции с подчёркиванием
+ *   (_read) второе имя без подчёркивания (read)». Библиотека вызывает стабы
+ *   по стандартным именам, поэтому для неё нужно и то и другое имя.
+ *
+ * ПОЧЕМУ ЗДЕСЬ _gettimeofday и usleep:
+ *   micro-ROS внутри себя вызывает usleep() и _gettimeofday() (таймауты и
+ *   часы). CubeMX не создаёт эти стабы автоматически, поэтому мы добавили
+ *   их вручную в конце файла. Хендлы для них: HAL_GetTick() и osDelay().
+ * ============================================================================
+ */
+
 
 /* Variables */
 extern int __io_putchar(int ch) __attribute__((weak));
@@ -41,15 +94,18 @@ char **environ = __env;
 
 
 /* Functions */
+// Пустая заглушка семи-хостинга (арм-отладчик). Ничего не делает.
 void initialise_monitor_handles()
 {
 }
 
+// Возвращает «PID» (номер процесса). Всегда 1, процессов у нас нет.
 int _getpid(void)
 {
   return 1;
 }
 
+// «Убивает» процесс по PID и сигналу. Сигналы не поддерживаем — всегда ошибка.
 int _kill(int pid, int sig)
 {
   (void)pid;
@@ -58,12 +114,14 @@ int _kill(int pid, int sig)
   return -1;
 }
 
+// Аварийный выход из программы: вешаемся в бесконечном цикле.
 void _exit (int status)
 {
   _kill(status, -1);
   while (1) {}    /* Make sure we hang here */
 }
 
+// Чтение len символов через __io_getchar (переопределить для приёма по UART).
 __attribute__((weak)) int _read(int file, char *ptr, int len)
 {
   (void)file;
@@ -77,6 +135,8 @@ __attribute__((weak)) int _read(int file, char *ptr, int len)
   return len;
 }
 
+// Запись len символов через __io_putchar (переопределить для вывода в UART).
+// Например, чтобы printf() печатал в UART — реализуй __io_putchar.
 __attribute__((weak)) int _write(int file, char *ptr, int len)
 {
   (void)file;
@@ -89,13 +149,14 @@ __attribute__((weak)) int _write(int file, char *ptr, int len)
   return len;
 }
 
+// Закрытие файла. Файлов у нас нет — всегда ошибка.
 int _close(int file)
 {
   (void)file;
   return -1;
 }
 
-
+// Описание файла для библиотеки: говорим «это символьное устройство» (терминал).
 int _fstat(int file, struct stat *st)
 {
   (void)file;
@@ -103,12 +164,14 @@ int _fstat(int file, struct stat *st)
   return 0;
 }
 
+// «Этот файл — терминал?» → да. Нужно для работы printf с потоком вывода.
 int _isatty(int file)
 {
   (void)file;
   return 1;
 }
 
+// Перемещение позиции в файле. Файлов нет — всегда 0.
 int _lseek(int file, int ptr, int dir)
 {
   (void)file;
@@ -117,6 +180,7 @@ int _lseek(int file, int ptr, int dir)
   return 0;
 }
 
+// Открытие файла. Всегда «открыть не удалось».
 int _open(char *path, int flags, ...)
 {
   (void)path;
@@ -125,6 +189,7 @@ int _open(char *path, int flags, ...)
   return -1;
 }
 
+// Ожидание завершения дочернего процесса. Дочек нет — ошибка.
 int _wait(int *status)
 {
   (void)status;
@@ -132,6 +197,7 @@ int _wait(int *status)
   return -1;
 }
 
+// Удаление файла. Всегда ошибка «файл не найден».
 int _unlink(char *name)
 {
   (void)name;
@@ -139,12 +205,14 @@ int _unlink(char *name)
   return -1;
 }
 
+// Времена процессора (CPU times). Не поддерживается — возвращаем -1.
 clock_t _times(struct tms *buf)
 {
   (void)buf;
   return -1;
 }
 
+// Статус файла (по имени). Говорим «символьное устройство».
 int _stat(const char *file, struct stat *st)
 {
   (void)file;
@@ -152,6 +220,7 @@ int _stat(const char *file, struct stat *st)
   return 0;
 }
 
+// Создание жёсткой ссылки на файл. Файловой системы нет — ошибка.
 int _link(char *old, char *new)
 {
   (void)old;
@@ -160,12 +229,14 @@ int _link(char *old, char *new)
   return -1;
 }
 
+// Создание нового процесса (fork). ОС без процессов — ошибка.
 int _fork(void)
 {
   errno = EAGAIN;
   return -1;
 }
 
+// Запуск другой программы (exec). Не поддерживается — ошибка.
 int _execve(char *name, char **argv, char **env)
 {
   (void)name;
@@ -173,6 +244,30 @@ int _execve(char *name, char **argv, char **env)
   (void)env;
   errno = ENOMEM;
   return -1;
+}
+
+// ----------------------------------------------------------------------------
+// Доп. функции для компиляции (добавлены вручную для micro-ROS):
+// библиотека rmw_microxrcedds вызывает их для таймаутов и «часов».
+// ----------------------------------------------------------------------------
+
+// Возвращает текущее «время» (момент с включения платы) в структуру timeval.
+// tv_sec = секунды, tv_usec = микросекунды. HAL_GetTick() даёт миллисекунды.
+int _gettimeofday(struct timeval* tv, void* tzvp) {
+  (void)tzvp;
+  // Возвращаем время с момента включения
+  tv->tv_sec = HAL_GetTick() / 1000;
+  tv->tv_usec = (HAL_GetTick() % 1000) * 1000;
+  return 0;
+}
+
+// Задержка (sleep) на usec микросекунд. Через osDelay RTOS в миллисекундах.
+int usleep(useconds_t usec) {
+  uint32_t ms = usec / 1000;
+  if (ms > 0) {
+    osDelay(ms);
+  }
+  return 0;
 }
 
 // --- Picolibc Specific Section ---
