@@ -5,7 +5,7 @@
 
 #include "main.h"
 
-#define MOTOR_TEST_DELAY (20)  // задержка между полушагами при тесте, мс
+#define MOTOR_TEST_DELAY (4)  // задержка между полушагами при тесте, мс
 
 // прошагать ровно steps шагов без проверки концевиков
 void step_motor(GPIO_TypeDef* step_port, uint16_t step_pin, uint32_t steps);

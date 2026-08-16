@@ -10,8 +10,8 @@
 
 #include <proto_turret_interfaces/msg/turret_command.h>
 
-#include "cmsis_os.h"  // osMessageQueueNew/Get/Put, osThreadNew, osDelay
-#include "main.h"      // HAL, пины (FAN, LD2, моторы, концевики)
+#include "cmsis_os.h"       // osMessageQueueNew/Get/Put, osThreadNew, osDelay
+#include "main.h"           // HAL, пины (FAN, LD2, моторы, концевики)
 #include "motor_control.h"  // step_motor, testMotorHorizontal/Vertical
 #include "transport.h"      // transport_ping_agent/init/spin/publish
 
@@ -210,7 +210,8 @@ void StartDefaultTask(void* argument) {
 // ДО osKernelStart.
 void TasksInit(void) {
   // Очередь TurretCommand: transport.c (cmd_callback) кладёт,
-  // Ros2TaskExecutor забирает. Размер элемента = размер сообщения TurretCommand.
+  // Ros2TaskExecutor забирает. Размер элемента = размер сообщения
+  // TurretCommand.
   cmdQueueHandle = osMessageQueueNew(
       4, sizeof(proto_turret_interfaces__msg__TurretCommand), NULL);
 

@@ -50,24 +50,96 @@ float lm75_read_temperature(void) {
   return (float)(raw >> 7) * 0.5f;
 }
 
+// Жёсткое восстановление «залипшей» I2C-шины.
+//
+// Если сбойная транзакция оставила шину в подвешенном состоянии (например,
+// датчик прижал SDA к земле), аппаратный флаг BUSY не сбрасывается, а на
+// STM32F4 периферию нельзя и выключить (PE не сбрасывается, пока шина busy).
+// Поэтому простого DeInit/Init не хватает — без перезапитки канал висит в
+// HAL_BUSY навсегда. Лечится классическим bus-recovery: сбрасываем периферию
+// через RCC FORCE_RESET, переводим SCL/SDA в обычные выходы и прогоняем
+// 9 тактов SCL при отпущенной SDA — залипший датчик отпускает шину.
+static void i2c_bus_recover(I2C_HandleTypeDef* hi2c) {
+  GPIO_TypeDef* scl_port;
+  uint16_t scl_pin;
+  GPIO_TypeDef* sda_port;
+  uint16_t sda_pin;
+
+  // Пины и сброс периферии зависят от того, какая шина I2C.
+  if (hi2c->Instance == I2C1) {
+    scl_port = GPIOB;  scl_pin = GPIO_PIN_6;   // I2C1_SCL
+    sda_port = GPIOB;  sda_pin = GPIO_PIN_7;   // I2C1_SDA
+    __HAL_RCC_I2C1_FORCE_RESET();
+    __HAL_RCC_I2C1_RELEASE_RESET();
+  } else if (hi2c->Instance == I2C2) {
+    scl_port = GPIOB;  scl_pin = GPIO_PIN_10;  // I2C2_SCL
+    sda_port = GPIOC;  sda_pin = GPIO_PIN_12;  // I2C2_SDA
+    __HAL_RCC_I2C2_FORCE_RESET();
+    __HAL_RCC_I2C2_RELEASE_RESET();
+  } else if (hi2c->Instance == I2C3) {
+    scl_port = GPIOA;  scl_pin = GPIO_PIN_8;   // I2C3_SCL
+    sda_port = GPIOC;  sda_pin = GPIO_PIN_9;   // I2C3_SDA
+    __HAL_RCC_I2C3_FORCE_RESET();
+    __HAL_RCC_I2C3_RELEASE_RESET();
+  } else {
+    return;
+  }
+
+  // Приводим HAL-хендл в порядок (State=RESET, Lock снят).
+  HAL_I2C_DeInit(hi2c);
+
+  // SCL и SDA — open-drain выходы с подтяжкой (слайв может прижимать SDA).
+  GPIO_InitTypeDef gpio = {0};
+  gpio.Mode = GPIO_MODE_OUTPUT_OD;
+  gpio.Pull = GPIO_PULLUP;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  gpio.Pin = scl_pin;
+  HAL_GPIO_Init(scl_port, &gpio);
+  gpio.Pin = sda_pin;
+  HAL_GPIO_Init(sda_port, &gpio);
+
+  // Отпускаем SDA (в «высокое») и гоняем 9 тактов SCL — это сбрасывает
+  // состояние I2C у датчика, и он освобождает SDA.
+  HAL_GPIO_WritePin(scl_port, scl_pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(sda_port, sda_pin, GPIO_PIN_SET);
+  osDelay(1);
+  for (int i = 0; i < 9; i++) {
+    HAL_GPIO_WritePin(scl_port, scl_pin, GPIO_PIN_RESET);
+    osDelay(1);
+    HAL_GPIO_WritePin(scl_port, scl_pin, GPIO_PIN_SET);
+    osDelay(1);
+  }
+
+  // STOP-условие: поднимаем SDA при высоком SCL.
+  HAL_GPIO_WritePin(sda_port, sda_pin, GPIO_PIN_RESET);
+  osDelay(1);
+  HAL_GPIO_WritePin(scl_port, scl_pin, GPIO_PIN_SET);
+  osDelay(1);
+  HAL_GPIO_WritePin(sda_port, sda_pin, GPIO_PIN_SET);
+  osDelay(1);
+  HAL_GPIO_WritePin(scl_port, scl_pin, GPIO_PIN_RESET);
+
+  // Возвращаем I2C в строй: MspInit вернёт пины в режим AF и включит такты.
+  HAL_I2C_Init(hi2c);
+}
+
 /*
 чтение угла с энкодера AS5600 по шине I2C
 возвращает 0..4095 (12 бит) или код ошибки:
   -1 = HAL_ERROR  — устройство не ответило (нет ACK)
   -2 = HAL_TIMEOUT — шина зависла, обмен не завершился за таймаут
-  -3 = HAL_BUSY    — периферия занята
+  -3 = HAL_BUSY    — шина физически «залипла» (не удалось восстановить)
 */
 int16_t as5600_read_angle_bus(I2C_HandleTypeDef* hi2c) {
   HAL_StatusTypeDef status = HAL_ERROR;
 
   // Ретраи: на движущейся турели бывают помехи на шине, и чтение может
-  // срываться. Пробуем до 3 раз, сбрасывая периферию между попытками.
-  for (int attempt = 0; attempt < 3; attempt++) {
-    // Если периферия зависла в BUSY после сбоя — сбрасываем её, иначе все
-    // последующие чтения будут возвращать HAL_BUSY навсегда.
+  // срываться. Пробуем до 5 раз; между попытками — жёсткое восстановление
+  // шины (i2c_bus_recover), чтобы канал сам оживал, а не вис до перезапитки.
+  for (int attempt = 0; attempt < 5; attempt++) {
+    // Если периферия уже не в READY (залипла после сбоя) — восстанавливаем.
     if (HAL_I2C_GetState(hi2c) != HAL_I2C_STATE_READY) {
-      HAL_I2C_DeInit(hi2c);
-      HAL_I2C_Init(hi2c);
+      i2c_bus_recover(hi2c);
     }
 
     uint8_t buffer[2];
@@ -81,9 +153,8 @@ int16_t as5600_read_angle_bus(I2C_HandleTypeDef* hi2c) {
       return (int16_t)(((buffer[0] << 8) | buffer[1]) >> 4);
     }
 
-    // неудача — восстанавливаем периферию и пробуем снова
-    HAL_I2C_DeInit(hi2c);
-    HAL_I2C_Init(hi2c);
+    // неудача — жёстко восстанавливаем шину и пробуем снова
+    i2c_bus_recover(hi2c);
     osDelay(1);
   }
 

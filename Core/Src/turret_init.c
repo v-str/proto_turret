@@ -27,7 +27,7 @@
 // I2C1 — энкодер M1 (горизонталь), пины PB6/PB7, 400 кГц
 I2C_HandleTypeDef hi2c1;
 
-// I2C2 — энкодер M2 (вертикаль), пины PB10/PC12, 400 кГц
+// I2C2 — энкодер M2 (вертикаль), пины PB10/PC12, 100 кГц
 I2C_HandleTypeDef hi2c2;
 
 // I2C3 — датчик температуры LM75, 100 кГц (медленная шина — датчику хватает)
@@ -161,10 +161,11 @@ static void MX_I2C1_Init(void) {
   }
 }
 
-// I2C2 — энкодер M2 (вертикаль): 400 кГц, 7-бит адресация.
+// I2C2 — энкодер M2 (вертикаль): 100 кГц (медленная шина терпимее к помехам
+// и плохим контактам, чем 400 кГц; частота всё равно далека от предела AS5600).
 static void MX_I2C2_Init(void) {
   hi2c2.Instance = I2C2;
-  hi2c2.Init.ClockSpeed = 400000;
+  hi2c2.Init.ClockSpeed = 100000;
   hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;

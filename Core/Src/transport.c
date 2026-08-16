@@ -68,6 +68,9 @@ static uint32_t last_temp_read_ms = 0;
 // Последние достоверные углы энкодеров (для фильтра скачков в publish_encoders)
 static int16_t last_enc1 = -1, last_enc2 = -1;
 
+// Счётчик сбоев чтения энкодеров с момента старта (публикуется 3-м элементом).
+static uint32_t encoder_read_errors = 0;
+
 // ----------------------------------------------------------------------------
 // Низкоуровневые функции транспорта и аллокатора (определены в других файлах)
 // ----------------------------------------------------------------------------
@@ -166,7 +169,8 @@ bool transport_init(void) {
     return false;
   }
   std_msgs__msg__Int32MultiArray__init(&as5600_raw_msg);
-  rosidl_runtime_c__int32__Sequence__init(&as5600_raw_msg.data, 2);
+  // 3 элемента: [M1, M2, счётчик ошибок чтения]
+  rosidl_runtime_c__int32__Sequence__init(&as5600_raw_msg.data, 3);
 
   // 6. Подписчик на топик PID_TOPIC_CMD — принимает TurretCommand от Qt.
   if (rclc_subscription_init_default(
@@ -259,15 +263,25 @@ void transport_publish_turret_data(void) {
   }
 }
 
-// Публикация сырых углов энкодеров AS5600 [M1, M2] в топик PID_TOPIC_AS5600.
+// Публикация углов энкодеров AS5600 в топик PID_TOPIC_AS5600:
+//   data[0] — M1 (горизонталь), data[1] — M2 (вертикаль),
+//   data[2] — счётчик сбоев чтения с момента старта.
 // Моторные помехи дают редкие мусорные чтения — отфильтровываем скачки
 // (filter_encoder_value) и публикуем последнее достоверное значение.
+// Счётчик data[2] показывает, что реально происходило с шиной, не маскируясь
+// фильтром.
 void transport_publish_encoders(void) {
   int16_t e1 = as5600_read_hor_angle();
   int16_t e2 = as5600_read_vert_angle();
+
+  // Считаем сбои чтения (коды ошибок < 0) — видно в data[2].
+  if (e1 < 0) encoder_read_errors++;
+  if (e2 < 0) encoder_read_errors++;
+
   e1 = filter_encoder_value(e1, &last_enc1);
   e2 = filter_encoder_value(e2, &last_enc2);
   as5600_raw_msg.data.data[0] = e1;  // M1 — горизонталь
   as5600_raw_msg.data.data[1] = e2;  // M2 — вертикаль
+  as5600_raw_msg.data.data[2] = (int32_t)encoder_read_errors;
   rcl_publish(&ros2_as5600_publisher, &as5600_raw_msg, NULL);
 }
