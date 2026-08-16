@@ -5,6 +5,7 @@
     "files.associations": {
       "int32.h": "c",
       "turret_command.h": "c",
-      "turret_status.h": "c"
+      "turret_status.h": "c",
+      "turret_init.h": "c"
     }
 }
