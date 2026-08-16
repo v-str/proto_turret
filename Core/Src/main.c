@@ -40,6 +40,8 @@
 #include <time.h>
 #include <uxr/client/transport.h>
 
+#include "motor_control.h"
+
 #include "constants.h"
 
 /* USER CODE END Includes */
@@ -55,7 +57,6 @@
 #define LM75_TEMP_ADDRESS (0x48 << 1)
 #define AS5600_I2C_ADDR (0x36 << 1)  // 7-бит адрес AS5600
 #define AS5600_REG_ANGLE 0x0C        // угол: 2 байта (старший/младший байт)
-#define MOTOR_TEST_DELAY (20)
 
 /* USER CODE END PD */
 
@@ -356,40 +357,6 @@ void publish_turret_data() {
       RCL_RET_OK) {
     ++temperature_publish_errors;
   }
-}
-
-// прошагать ровно steps шагов без проверки концевиков
-void step_motor(GPIO_TypeDef* step_port, uint16_t step_pin, uint32_t steps) {
-  for (uint32_t i = 0; i < steps; i++) {
-    HAL_GPIO_WritePin(step_port, step_pin, GPIO_PIN_SET);
-    osDelay(MOTOR_TEST_DELAY);
-    HAL_GPIO_WritePin(step_port, step_pin, GPIO_PIN_RESET);
-    osDelay(MOTOR_TEST_DELAY);
-  }
-}
-
-uint32_t testMotorHorizontal(GPIO_TypeDef* stop_port, uint16_t stop_pin) {
-  uint32_t steps = 0;
-  while (HAL_GPIO_ReadPin(stop_port, stop_pin) != GPIO_PIN_RESET) {
-    HAL_GPIO_WritePin(M1_STEP_GPIO_Port, M1_STEP_Pin, GPIO_PIN_SET);
-    osDelay(MOTOR_TEST_DELAY);
-    HAL_GPIO_WritePin(M1_STEP_GPIO_Port, M1_STEP_Pin, GPIO_PIN_RESET);
-    osDelay(MOTOR_TEST_DELAY);
-    steps++;
-  }
-  return steps;
-}
-
-uint32_t testMotorVertical(GPIO_TypeDef* stop_port, uint16_t stop_pin) {
-  uint32_t steps = 0;
-  while (HAL_GPIO_ReadPin(stop_port, stop_pin) != GPIO_PIN_RESET) {
-    HAL_GPIO_WritePin(M2_STEP_GPIO_Port, M2_STEP_Pin, GPIO_PIN_SET);
-    osDelay(MOTOR_TEST_DELAY);
-    HAL_GPIO_WritePin(M2_STEP_GPIO_Port, M2_STEP_Pin, GPIO_PIN_RESET);
-    osDelay(MOTOR_TEST_DELAY);
-    steps++;
-  }
-  return steps;
 }
 
 /* USER CODE END 0 */
