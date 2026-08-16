@@ -14,6 +14,7 @@ sudo rm -rfv micro_ros_stm32cubemx_utils/microros_static_library/library_generat
 sudo rm -rfv micro_ros_stm32cubemx_utils/microros_static_library/library_generation/log
 
 # 2. Запускаем контейнер и собираем библиотеку из правильной папки
+yes | docker container prune
 docker run -it \
   --name micro_ros_builder \
   -v $PROJECT_DIR:/project \
