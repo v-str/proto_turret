@@ -12,4 +12,8 @@ extern osMessageQueueId_t cmdQueueHandle;
 // и до osKernelStart.
 void TasksInit(void);
 
+// Калибровка обеих осей (панорама + тильт). Вызывается из коллбэка сервиса
+// turret_calibrate (transport.c). Возвращает 1 при успехе, 0 при ошибке.
+uint8_t turret_calibrate(void);
+
 #endif  // TURRET_TASKS_H

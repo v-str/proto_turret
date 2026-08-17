@@ -35,15 +35,10 @@ void transport_publish_turret_data(void);
 // Мусорные скачки от моторных помех отфильтровываются.
 void transport_publish_encoders(void);
 
-// --- API калибровки (action turret_calibrate) ---
-
-// Забрать принятую action-цель калибровки. true = есть ожидающая калибровка
-// (всегда калибруются обе оси: панорама + тильт).
-bool transport_calibration_take_goal(void);
-
-// Завершить калибровку и отправить результат клиенту (success + шаги ходов).
-void transport_calibration_finish(uint8_t success, uint32_t pan_steps,
-                                  uint32_t tilt_steps);
+// --- Калибровка (сервис turret_calibrate) ---
+// Сервис обрабатывается синхронно в коллбэке (rclc-исполнитель сам шлёт
+// ответ). turret_calibrate() из turret_tasks.c выполняет калибровку и
+// заполняет результат.
 
 // Запомнить текущий накопленный угол панорамы/тильта как 0° (после того, как
 // турель доехала до середины диапазона).

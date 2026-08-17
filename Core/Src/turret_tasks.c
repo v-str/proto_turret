@@ -8,13 +8,13 @@
 
 #include "turret_tasks.h"
 
-#include <stdint.h>  // UINT32_MAX
 #include <proto_turret_interfaces/msg/turret_command.h>
+#include <stdint.h>  // UINT32_MAX
 
 #include "cmsis_os.h"       // osMessageQueueNew/Get/Put, osThreadNew, osDelay
 #include "main.h"           // HAL, пины (FAN, LD2, моторы, концевики)
 #include "motor_control.h"  // motor_enable, motor_*_until_endstop, motor_*_steps
-#include "transport.h"      // transport_ping_agent/init/spin/publish + калибровка
+#include "transport.h"  // transport_ping_agent/init/spin/publish + калибровка
 
 // ----------------------------------------------------------------------------
 // Файловые (static) переменные — видны только внутри turret_tasks.c
@@ -93,6 +93,26 @@ static uint32_t calibrate_axis_tilt(void) {
 }
 
 // -------------------------------------------------------------------
+// turret_calibrate() — калибровка обеих осей (панорама + тильт).
+// Вызывается из коллбэка сервиса turret_calibrate (transport.c) в потоке
+// StartDefaultTask. Возвращает 1, если обе оси откалиброваны успешно.
+// -------------------------------------------------------------------
+uint8_t turret_calibrate(void) {
+  motor_enable(1);  // включить драйверы обоих моторов
+
+  uint8_t ok = 1;
+  uint32_t pan_steps = calibrate_axis_pan();
+  if (pan_steps == UINT32_MAX) ok = 0;
+  if (ok) {
+    uint32_t tilt_steps = calibrate_axis_tilt();
+    if (tilt_steps == UINT32_MAX) ok = 0;
+  }
+
+  motor_enable(0);  // отключить драйверы
+  return ok;
+}
+
+// -------------------------------------------------------------------
 // Ros2TaskExecutor() — второй тред (поток) FreeRTOS.
 //   Крутится в бесконечном цикле, ждёт команды из очереди.
 //   Как пришла команда от Qt — дёргает мотор или вентилятор
@@ -104,28 +124,6 @@ void Ros2TaskExecutor(void* argument) {
   proto_turret_interfaces__msg__TurretCommand cmd;
 
   for (;;) {
-    // -----------------------------------------------------------------
-    // КАЛИБРОВКА (action turret_calibrate)
-    // Если Qt прислала goal — калибруем обе оси (панорама + тильт) и
-    // отправляем результат.
-    // -----------------------------------------------------------------
-    if (transport_calibration_take_goal()) {
-      motor_enable(1);  // включить драйверы обоих моторов
-      uint32_t pan_steps = 0, tilt_steps = 0;
-      uint8_t ok = 1;
-
-      pan_steps = calibrate_axis_pan();
-      if (pan_steps == UINT32_MAX) ok = 0;
-      if (ok) {
-        tilt_steps = calibrate_axis_tilt();
-        if (tilt_steps == UINT32_MAX) ok = 0;
-      }
-
-      motor_enable(0);  // отключить драйверы
-      transport_calibration_finish(ok, pan_steps, tilt_steps);
-      continue;
-    }
-
     // osMessageQueueGet — забирает сообщение из очереди.
     // Первый параметр — handle (дескриптор/ручка) очереди — cmdQueueHandle.
     // Второй — куда сохранить сообщение (&cmd — адрес переменной cmd).

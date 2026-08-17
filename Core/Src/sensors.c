@@ -172,6 +172,55 @@ int16_t as5600_read_hor_angle(void) { return as5600_read_angle_bus(&hi2c1); }
 int16_t as5600_read_vert_angle(void) { return as5600_read_angle_bus(&hi2c2); }
 
 /*
+стабильное чтение угла AS5600: читаем 3 раза подряд и берём медиану.
+Длинные провода дают редкие «битовые» сбои — транзакция проходит успешно, но
+байты угла приходят испорченными (выбросы до десятков счётчиков). Медиана
+отбрасывает выброс, пока хотя бы два чтения из трёх достоверны.
+Возвращает 0..4095 или код ошибки (< 0), если все три чтения провалились.
+*/
+int16_t as5600_read_stable_angle_bus(I2C_HandleTypeDef* hi2c) {
+  int16_t v[3];
+  int n = 0;
+  int16_t last_err = -4;
+
+  for (int i = 0; i < 3; i++) {
+    int16_t r = as5600_read_angle_bus(hi2c);
+    if (r >= 0) {
+      v[n++] = r;
+    } else {
+      last_err = r;
+    }
+  }
+
+  if (n == 0) {
+    return last_err;  // шина реально не отвечает
+  }
+  if (n == 1) {
+    return v[0];
+  }
+  if (n == 2) {
+    return (int16_t)(((int32_t)v[0] + v[1]) / 2);
+  }
+
+  // n == 3: медиана — средний по величине
+  int16_t a = v[0], b = v[1], c = v[2];
+  if (a > b) { int16_t t = a; a = b; b = t; }
+  if (b > c) { int16_t t = b; b = c; c = t; }
+  if (a > b) { int16_t t = a; a = b; b = t; }
+  return b;
+}
+
+// энкодер M1 (горизонталь), стабильное чтение
+int16_t as5600_read_stable_hor_angle(void) {
+  return as5600_read_stable_angle_bus(&hi2c1);
+}
+
+// энкодер M2 (вертикаль), стабильное чтение
+int16_t as5600_read_stable_vert_angle(void) {
+  return as5600_read_stable_angle_bus(&hi2c2);
+}
+
+/*
 фильтр скачков значения энкодера (12-бит, диапазон 0..4095).
 Моторные помехи дают мусорные чтения — если значение скакнуло больше чем на
 ENC_JUMP_MAX от предыдущего (с учётом обёртки 4095->0), считаем его мусором и

@@ -6,7 +6,9 @@
       "int32.h": "c",
       "turret_command.h": "c",
       "turret_status.h": "c",
-      "turret_init.h": "c"
+      "turret_init.h": "c",
+      "transport.h": "c",
+      "turret_tasks.h": "c"
     },
     "cmake.sourceDirectory": "/home/user/Ros2/proto_turret/Drivers/CMSIS/NN"
 }

@@ -7,7 +7,7 @@ find_package(rosidl_default_generators REQUIRED)
 set(interfaces
   "msg/TurretCommand.msg"
   "msg/TurretStatus.msg"
-  "action/TurretCalibrate.action"
+  "srv/TurretCalibrate.srv"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
