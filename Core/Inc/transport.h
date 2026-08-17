@@ -2,6 +2,7 @@
 #define TRANSPORT_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // ----------------------------------------------------------------------------
 // transport.c/.h — обмен данными турели с ROS (micro-ROS по USART2 + DMA).
@@ -33,5 +34,20 @@ void transport_publish_turret_data(void);
 // Публикация сырых углов энкодеров AS5600 [M1, M2] в топик PID_TOPIC_AS5600.
 // Мусорные скачки от моторных помех отфильтровываются.
 void transport_publish_encoders(void);
+
+// --- API калибровки (action turret_calibrate) ---
+
+// Забрать принятую action-цель калибровки. true = есть ожидающая калибровка
+// (всегда калибруются обе оси: панорама + тильт).
+bool transport_calibration_take_goal(void);
+
+// Завершить калибровку и отправить результат клиенту (success + шаги ходов).
+void transport_calibration_finish(uint8_t success, uint32_t pan_steps,
+                                  uint32_t tilt_steps);
+
+// Запомнить текущий накопленный угол панорамы/тильта как 0° (после того, как
+// турель доехала до середины диапазона).
+void transport_set_pan_zero(void);
+void transport_set_tilt_zero(void);
 
 #endif  // TRANSPORT_H

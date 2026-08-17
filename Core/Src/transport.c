@@ -13,10 +13,12 @@
 
 #include "transport.h"
 
+#include <proto_turret_interfaces/action/turret_calibrate.h>
 #include <proto_turret_interfaces/msg/turret_command.h>
 #include <proto_turret_interfaces/msg/turret_status.h>
 #include <rcl/error_handling.h>
 #include <rcl/rcl.h>
+#include <rclc/action_server.h>
 #include <rclc/executor.h>
 #include <rclc/rclc.h>
 #include <rmw_microros/rmw_microros.h>
@@ -49,7 +51,8 @@ static rcl_allocator_t ros2_allocator;      // аллокатор
 static rcl_node_t ros2_node;                // нода "proto_turret_node"
 static rclc_executor_t ros2_executor;       // исполнитель (spin_some)
 static proto_turret_interfaces__msg__TurretStatus
-    ros2_turret_status;  // статус турели: концевики, температура, вентилятор
+    ros2_turret_status;  // статус турели: концевики, температура, вентилятор,
+                         // углы
 static proto_turret_interfaces__msg__TurretCommand
     ros2_cmd_msg;  // входящая команда (сюда кладёт подписчик)
 static std_msgs__msg__Int32MultiArray
@@ -62,12 +65,38 @@ static uint8_t last_switch_mask = 0;  // для фильтрации
 static uint8_t last_fan_enable = 0;
 static uint32_t last_publish_ms = 0;
 static uint32_t last_temp_read_ms = 0;
+static float last_pan_angle = 0.0f,
+             last_tilt_angle = 0.0f;  // для «живых» углов
 
 // Последние достоверные углы энкодеров (для фильтра скачков в publish_encoders)
 static int16_t last_enc1 = -1, last_enc2 = -1;
 
 // Счётчик сбоев чтения энкодеров с момента старта (публикуется 3-м элементом).
 static uint32_t encoder_read_errors = 0;
+
+// ----------------------------------------------------------------------------
+// Непрерывный угол энкодеров (магнит на валу мотора: внутри хода возможна
+// обёртка 4095->0). prev_enc1/2 — предыдущие ОТФИЛЬТРОВАННЫЕ значения,
+// pan_accum/tilt_accum — накопленный угол в счётчиках (монотонно растёт
+// при вращении в одну сторону независимо от обёртки).
+// ----------------------------------------------------------------------------
+static int16_t prev_enc1 = -1, prev_enc2 = -1;
+static int32_t pan_accum = 0, tilt_accum = 0;
+
+// Ноль (накопленный угол в «средней» позиции) и флаг готовности. Устанавливает
+// калибровка через transport_set_pan_zero/tilt_zero. До калибровки углы = 0.
+static int32_t pan_zero = 0, tilt_zero = 0;
+static uint8_t pan_calibrated = 0, tilt_calibrated = 0;
+
+// --- Состояние action-сервера калибровки ---
+static rclc_action_server_t calib_server;
+static proto_turret_interfaces__action__TurretCalibrate_SendGoal_Request
+    calib_goal_request;
+static rclc_action_goal_handle_t* calib_goal = NULL;  // активная цель
+static uint8_t calib_busy = 0;                        // калибровка идёт
+
+// Throttle опроса энкодеров: читаем/публикуем не чаще раза в 100 мс (10 Гц).
+static uint32_t last_enc_publish_ms = 0;
 
 // ----------------------------------------------------------------------------
 // Низкоуровневые функции транспорта и аллокатора (определены в других файлах)
@@ -94,6 +123,35 @@ extern void* microros_zero_allocate(size_t number_of_elements,
 // откуда её заберёт поток Ros2TaskExecutor (см. turret_tasks.c).
 static void cmd_callback(const void* msgin) {
   osMessageQueuePut(cmdQueueHandle, msgin, 0, 0);
+}
+
+// Кратчайшая разница между двумя значениями энкодера с учётом обёртки 0..4095.
+// Например: 4090 -> 5 даёт +11 (переход через ноль), а не -4085.
+static int16_t wrap_delta(int16_t cur, int16_t prev) {
+  int32_t d = (int32_t)cur - (int32_t)prev;
+  if (d > 2048) d -= 4096;
+  if (d < -2048) d += 4096;
+  return (int16_t)d;
+}
+
+// Коллбэк action-сервера на запрос цели (goal). Вызывается executor'ом ТОЛЬКО
+// для приёма/отказа цели. Возврат RCL_RET_ACTION_GOAL_ACCEPTED — принять.
+// Само выполнение калибровки идёт в потоке Ros2TaskExecutor (см.
+// transport_calibration_take_goal), чтобы не блокировать публикации.
+static rcl_ret_t calib_goal_callback(rclc_action_goal_handle_t* goal_handle,
+                                     void* args) {
+  if (calib_busy) {
+    return RCL_RET_ACTION_GOAL_REJECTED;  // уже идёт калибровка — отказ
+  }
+  calib_goal = goal_handle;
+  calib_busy = 1;
+  return RCL_RET_ACTION_GOAL_ACCEPTED;
+}
+
+// Отмена калибровки во время движения мотором не поддерживается — отказ.
+static bool calib_cancel_callback(rclc_action_goal_handle_t* goal_handle,
+                                  void* args) {
+  return false;
 }
 
 // Настройка кастомного транспорта micro-ROS: USART2 + DMA.
@@ -148,8 +206,8 @@ bool transport_init(void) {
     return false;
   }
 
-  // 5. Издатель статуса турели: концевики, температура, вентилятор
-  //   → топик PID_TOPIC_STATUS.
+  // 5. Издатель статуса турели: концевики, температура, вентилятор, углы
+  // поворота → топик PID_TOPIC_STATUS.
   if (rclc_publisher_init_default(
           &ros2_turret_status_publisher, &ros2_node,
           ROSIDL_GET_MSG_TYPE_SUPPORT(proto_turret_interfaces, msg,
@@ -158,7 +216,7 @@ bool transport_init(void) {
     return false;
   }
 
-  // 5.1. Отдельный издатель для отладки энкодеров AS5600:
+  // 5.1. Debug. Отдельный издатель для отладки энкодеров AS5600:
   //   сырые углы обоих энкодеров [M1, M2] → топик PID_TOPIC_AS5600.
   if (rclc_publisher_init_default(
           &ros2_as5600_publisher, &ros2_node,
@@ -181,7 +239,7 @@ bool transport_init(void) {
 
   // 7. Executor (исполнитель): умеет вызывать коллбэки при получении
   //   сообщений. transport_spin_some() будет проверять, не пришло ли что-то.
-  if (rclc_executor_init(&ros2_executor, &ros2_support.context, 1,
+  if (rclc_executor_init(&ros2_executor, &ros2_support.context, 2,
                          &ros2_allocator) != RCL_RET_OK) {
     return false;
   }
@@ -197,6 +255,22 @@ bool transport_init(void) {
     return false;
   }
 
+  // 9. Action-сервер калибровки (turret_calibrate). Выполнение калибровки
+  //   идёт в потоке Ros2TaskExecutor — здесь лишь создаём сервер и коллбэки.
+  if (rclc_action_server_init_default(
+          &calib_server, &ros2_node, &ros2_support,
+          ROSIDL_GET_ACTION_TYPE_SUPPORT(proto_turret_interfaces, action,
+                                         TurretCalibrate),
+          PID_ACTION_CALIBRATE) != RCL_RET_OK) {
+    return false;
+  }
+  if (rclc_executor_add_action_server(
+          &ros2_executor, &calib_server, 1, &calib_goal_request,
+          sizeof(calib_goal_request), &calib_goal_callback,
+          &calib_cancel_callback, NULL) != RCL_RET_OK) {
+    return false;
+  }
+
   return true;
 }
 
@@ -204,9 +278,10 @@ bool transport_init(void) {
 // cmd_callback, и команда окажется в очереди cmdQueueHandle.
 void transport_spin_some(void) { rclc_executor_spin_some(&ros2_executor, 10); }
 
-// Публикация статуса турели: концевики (маска), температура, вентилятор.
-// Публикуем сразу при изменении состояния (мгновенная реакция на концевики),
-// в покое — heartbeat раз в 1 секунду.
+// Публикация статуса турели: концевики (маска), температура, вентилятор, углы.
+// Углы pan_angle/tilt_angle обновляются в transport_publish_encoders.
+// Публикуем сразу при изменении состояния (мгновенная реакция на концевики
+// и движение турели), в покое — heartbeat раз в 1 секунду.
 void transport_publish_turret_data(void) {
   uint32_t now = HAL_GetTick();
 
@@ -229,14 +304,20 @@ void transport_publish_turret_data(void) {
   // Состояние вентилятора читаем прямо с пина
   uint8_t fan = (HAL_GPIO_ReadPin(FAN_GPIO_Port, FAN_Pin) == GPIO_PIN_SET);
 
-  // Публикуем, если состояние изменилось, либо раз в 1 сек (heartbeat)
-  bool changed = (mask != last_switch_mask) || (fan != last_fan_enable);
+  // Публикуем, если состояние изменилось, либо раз в 1 сек (heartbeat).
+  // Углы тоже включаем в условие: пока турель движется — публикуем сразу,
+  // в покое — heartbeat.
+  bool changed = (mask != last_switch_mask) || (fan != last_fan_enable) ||
+                 (ros2_turret_status.pan_angle != last_pan_angle) ||
+                 (ros2_turret_status.tilt_angle != last_tilt_angle);
   bool heartbeat = ((uint32_t)(now - last_publish_ms) >= 1000u);
   if (!changed && !heartbeat) {
     return;
   }
   last_switch_mask = mask;
   last_fan_enable = fan;
+  last_pan_angle = ros2_turret_status.pan_angle;
+  last_tilt_angle = ros2_turret_status.tilt_angle;
   last_publish_ms = now;
 
   // Температуру (I2C) перечитываем только раз в 1 сек, чтобы не грузить шину
@@ -263,7 +344,20 @@ void transport_publish_turret_data(void) {
 // (filter_encoder_value) и публикуем последнее достоверное значение.
 // Счётчик data[2] показывает, что реально происходило с шиной, не маскируясь
 // фильтром.
+//
+// Вызывается каждые 10 мс из StartDefaultTask, но опрашиваем энкодеры и
+// публикуем не чаще раза в 100 мс (10 Гц), чтобы не грузить I2C и не слать
+// лишний «мусор». Заодно здесь обновляется непрерывный угол (накопление
+// с учётом обёртки) и углы для статуса в градусах.
 void transport_publish_encoders(void) {
+  uint32_t now = HAL_GetTick();
+
+  // Опрос не чаще раза в 100 мс
+  if ((uint32_t)(now - last_enc_publish_ms) < 100u) {
+    return;
+  }
+  last_enc_publish_ms = now;
+
   int16_t e1 = as5600_read_hor_angle();
   int16_t e2 = as5600_read_vert_angle();
 
@@ -273,8 +367,78 @@ void transport_publish_encoders(void) {
 
   e1 = filter_encoder_value(e1, &last_enc1);
   e2 = filter_encoder_value(e2, &last_enc2);
+
+  // Непрерывный угол: накапливаем кратчайшую дельту между отфильтрованными
+  // значениями (обёртка 4095->0 не ломает счёт).
+  if (prev_enc1 < 0) {
+    prev_enc1 = e1;
+  } else {
+    pan_accum += wrap_delta(e1, prev_enc1);
+    prev_enc1 = e1;
+  }
+  if (prev_enc2 < 0) {
+    prev_enc2 = e2;
+  } else {
+    tilt_accum += wrap_delta(e2, prev_enc2);
+    prev_enc2 = e2;
+  }
+
   as5600_raw_msg.data.data[0] = e1;  // M1 — горизонталь
   as5600_raw_msg.data.data[1] = e2;  // M2 — вертикаль
   as5600_raw_msg.data.data[2] = (int32_t)encoder_read_errors;
+
+  // Углы для статуса: (накопленный угол - ноль) в градусах. Слева от нуля —
+  // отрицательные, справа — положительные. До калибровки — 0.
+  ros2_turret_status.pan_angle =
+      pan_calibrated ? (float)(pan_accum - pan_zero) * 360.0f / 4096.0f : 0.0f;
+  ros2_turret_status.tilt_angle =
+      tilt_calibrated ? (float)(tilt_accum - tilt_zero) * 360.0f / 4096.0f
+                      : 0.0f;
+
   rcl_publish(&ros2_as5600_publisher, &as5600_raw_msg, NULL);
+}
+
+// ----------------------------------------------------------------------------
+// API калибровки для потока Ros2TaskExecutor (см. turret_tasks.c)
+// ----------------------------------------------------------------------------
+
+// Забрать принятую action-цель. Возвращает true, если есть ожидающая
+// калибровка. Вызывается один раз перед началом калибровки.
+bool transport_calibration_take_goal(void) {
+  return calib_goal != NULL;
+}
+
+// Завершить калибровку и отправить результат клиенту (rclc_action_send_result).
+// Результат отправится, когда клиент запросит его (несколько попыток).
+void transport_calibration_finish(uint8_t success, uint32_t pan_steps,
+                                  uint32_t tilt_steps) {
+  for (int attempt = 0; attempt < 100 && calib_goal != NULL; attempt++) {
+    proto_turret_interfaces__action__TurretCalibrate_Result_Response result;
+    result.status = success ? GOAL_STATE_SUCCEEDED : GOAL_STATE_ABORTED;
+    result.result.success = (bool)success;
+    result.result.pan_steps = pan_steps;
+    result.result.tilt_steps = tilt_steps;
+
+    if (rclc_action_send_result(
+            calib_goal, success ? GOAL_STATE_SUCCEEDED : GOAL_STATE_ABORTED,
+            &result) == RCL_RET_OK) {
+      break;
+    }
+    osDelay(20);  // клиент ещё не запросил результат — ждём и пробуем снова
+  }
+  calib_goal = NULL;
+  calib_busy = 0;
+}
+
+// Запомнить текущий накопленный угол панорамы как 0° (вызывается после того,
+// как турель доехала до середины диапазона).
+void transport_set_pan_zero(void) {
+  pan_zero = pan_accum;
+  pan_calibrated = 1;
+}
+
+// То же для тильта.
+void transport_set_tilt_zero(void) {
+  tilt_zero = tilt_accum;
+  tilt_calibrated = 1;
 }

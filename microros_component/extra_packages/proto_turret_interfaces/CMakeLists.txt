@@ -4,13 +4,14 @@ project(proto_turret_interfaces)
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
-set(msg_files
+set(interfaces
   "msg/TurretCommand.msg"
   "msg/TurretStatus.msg"
+  "action/TurretCalibrate.action"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  ${msg_files}
+  ${interfaces}
 )
 
 ament_export_dependencies(rosidl_default_runtime)

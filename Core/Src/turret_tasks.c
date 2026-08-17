@@ -8,12 +8,13 @@
 
 #include "turret_tasks.h"
 
+#include <stdint.h>  // UINT32_MAX
 #include <proto_turret_interfaces/msg/turret_command.h>
 
 #include "cmsis_os.h"       // osMessageQueueNew/Get/Put, osThreadNew, osDelay
 #include "main.h"           // HAL, пины (FAN, LD2, моторы, концевики)
-#include "motor_control.h"  // step_motor, testMotorHorizontal/Vertical
-#include "transport.h"      // transport_ping_agent/init/spin/publish
+#include "motor_control.h"  // motor_enable, motor_*_until_endstop, motor_*_steps
+#include "transport.h"      // transport_ping_agent/init/spin/publish + калибровка
 
 // ----------------------------------------------------------------------------
 // Файловые (static) переменные — видны только внутри turret_tasks.c
@@ -37,14 +38,6 @@ static const osThreadAttr_t ros2TaskExecutor_attributes = {
     .stack_size = 1024 * 4,
     .priority = (osPriority_t)osPriorityNormal,
 };
-static osThreadId_t motorTestTaskHandle;
-static const osThreadAttr_t motorTestTask_attributes = {
-    .name = "motorTest",
-    .stack_size = 1024 * 4,
-    // Normal — равный приоритет с defaultTask: time-slicing даёт мотору
-    // регулярные срезы времени, даже пока ROS-поток висит в блокирующем I2C.
-    .priority = (osPriority_t)osPriorityNormal,
-};
 
 // Мигание встроенным светодиодом LD2. count — сколько раз мигнуть.
 // Используется как индикатор: ping агента / ошибка инициализации.
@@ -59,6 +52,47 @@ void led_blink(int count) {
 }
 
 // -------------------------------------------------------------------
+// Калибровка оси по схеме:
+//   влево до концевика (опорная точка) → пауза → вправо до другого
+//   концевика со счётом шагов → пауза → влево на steps/2 (центр = 0°).
+// Возвращает число шагов полного хода; UINT32_MAX = ошибка (концевик
+// не сработал за CALIB_MAX_STEPS).
+// -------------------------------------------------------------------
+static uint32_t calibrate_axis_pan(void) {
+  if (motor_pan_until_endstop(PAN_DIR_LEFT) == UINT32_MAX) {
+    return UINT32_MAX;  // левый концевик не сработал
+  }
+  osDelay(500);
+
+  uint32_t steps = motor_pan_until_endstop(PAN_DIR_RIGHT);
+  if (steps == UINT32_MAX || steps == 0) {
+    return UINT32_MAX;  // правый концевик не сработал (или хода нет)
+  }
+  osDelay(500);
+
+  motor_pan_steps(steps / 2, PAN_DIR_LEFT);  // возврат в середину
+  transport_set_pan_zero();                  // середина = 0° (панорама)
+  return steps;
+}
+
+static uint32_t calibrate_axis_tilt(void) {
+  if (motor_tilt_until_endstop(TILT_DIR_FRONT) == UINT32_MAX) {
+    return UINT32_MAX;  // передний концевик не сработал
+  }
+  osDelay(500);
+
+  uint32_t steps = motor_tilt_until_endstop(TILT_DIR_REAR);
+  if (steps == UINT32_MAX || steps == 0) {
+    return UINT32_MAX;  // задний концевик не сработал (или хода нет)
+  }
+  osDelay(500);
+
+  motor_tilt_steps(steps / 2, TILT_DIR_FRONT);  // возврат в середину
+  transport_set_tilt_zero();                    // середина = 0° (тильт)
+  return steps;
+}
+
+// -------------------------------------------------------------------
 // Ros2TaskExecutor() — второй тред (поток) FreeRTOS.
 //   Крутится в бесконечном цикле, ждёт команды из очереди.
 //   Как пришла команда от Qt — дёргает мотор или вентилятор
@@ -70,6 +104,28 @@ void Ros2TaskExecutor(void* argument) {
   proto_turret_interfaces__msg__TurretCommand cmd;
 
   for (;;) {
+    // -----------------------------------------------------------------
+    // КАЛИБРОВКА (action turret_calibrate)
+    // Если Qt прислала goal — калибруем обе оси (панорама + тильт) и
+    // отправляем результат.
+    // -----------------------------------------------------------------
+    if (transport_calibration_take_goal()) {
+      motor_enable(1);  // включить драйверы обоих моторов
+      uint32_t pan_steps = 0, tilt_steps = 0;
+      uint8_t ok = 1;
+
+      pan_steps = calibrate_axis_pan();
+      if (pan_steps == UINT32_MAX) ok = 0;
+      if (ok) {
+        tilt_steps = calibrate_axis_tilt();
+        if (tilt_steps == UINT32_MAX) ok = 0;
+      }
+
+      motor_enable(0);  // отключить драйверы
+      transport_calibration_finish(ok, pan_steps, tilt_steps);
+      continue;
+    }
+
     // osMessageQueueGet — забирает сообщение из очереди.
     // Первый параметр — handle (дескриптор/ручка) очереди — cmdQueueHandle.
     // Второй — куда сохранить сообщение (&cmd — адрес переменной cmd).
@@ -119,47 +175,6 @@ void Ros2TaskExecutor(void* argument) {
   }
 }
 
-// MotorTestTask — отдельный поток для проверки моторов.
-// Не зависит от transport_init() и не блокирует defaultTask (ROS).
-void MotorTestTask(void* argument) {
-  HAL_GPIO_WritePin(M1_EN_GPIO_Port, M1_EN_Pin, GPIO_PIN_RESET);  // включить M1
-  HAL_GPIO_WritePin(M2_EN_GPIO_Port, M2_EN_Pin, GPIO_PIN_RESET);  // включить M2
-
-  for (;;) {
-    // ---------- ГОРИЗОНТАЛЬ ----------
-    HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_RESET);
-    testMotorHorizontal(SWITCH_HOR_LEFT_GPIO_Port,
-                        SWITCH_HOR_LEFT_Pin);  // полный ход ВЛЕВО до концевика
-    osDelay(1000);
-
-    HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_SET);
-    uint32_t hor_step =
-        testMotorHorizontal(SWITCH_HOR_RIGHT_GPIO_Port,
-                            SWITCH_HOR_RIGHT_Pin);  // полный ход ВПРАВО (замер)
-    osDelay(1000);
-
-    HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_RESET);
-    step_motor(M1_STEP_GPIO_Port, M1_STEP_Pin, hor_step / 2);  // выход в центр
-    osDelay(1000);
-
-    // ---------- ВЕРТИКАЛЬ ----------
-    HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_RESET);
-    testMotorVertical(SWITCH_VERT_FRONT_GPIO_Port,
-                      SWITCH_VERT_FRONT_Pin);  // полный ход до FRONT
-    osDelay(1000);
-
-    HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_SET);
-    uint32_t vert_step =
-        testMotorVertical(SWITCH_VERT_REAR_GPIO_Port,
-                          SWITCH_VERT_REAR_Pin);  // полный ход до REAR (замер)
-    osDelay(1000);
-
-    HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_RESET);
-    step_motor(M2_STEP_GPIO_Port, M2_STEP_Pin, vert_step / 2);  // выход в центр
-    osDelay(1000);
-  }
-}
-
 /**
  * @brief  Главный поток: ожидание агента, инициализация micro-ROS и
  *         периодическая публикация данных турели.
@@ -189,11 +204,13 @@ void StartDefaultTask(void* argument) {
     // проверить входящие команды от Qt (кладёт их в очередь команд)
     transport_spin_some();
 
-    // опубликовать статус турели: концевики, температура, вентилятор
-    transport_publish_turret_data();
-
-    // отладка энкодеров: сырые углы AS5600 [M1, M2] (с фильтром скачков)
+    // отладка энкодеров: сырые углы AS5600 [M1, M2] (с фильтром скачков).
+    // Заодно обновляет углы для статуса — поэтому вызывается ДО публикации
+    // статуса, чтобы PID_TOPIC_STATUS уходил со свежими pan_angle/tilt_angle.
     transport_publish_encoders();
+
+    // опубликовать статус турели: концевики, температура, вентилятор, углы
+    transport_publish_turret_data();
 
     osDelay(10);
   }
@@ -216,8 +233,4 @@ void TasksInit(void) {
   // поток-исполнитель команд из очереди
   ros2TaskExecutorHandle =
       osThreadNew(Ros2TaskExecutor, NULL, &ros2TaskExecutor_attributes);
-
-  // поток теста моторов
-  motorTestTaskHandle =
-      osThreadNew(MotorTestTask, NULL, &motorTestTask_attributes);
 }
