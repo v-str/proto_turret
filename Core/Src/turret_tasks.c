@@ -12,6 +12,7 @@
 #include <stdint.h>  // UINT32_MAX
 
 #include "cmsis_os.h"       // osMessageQueueNew/Get/Put, osThreadNew, osDelay
+#include "constants.h"  // стеки потоков, задержки, CALIB_PAUSE_MS, AGENT_POLL_DELAY_MS
 #include "main.h"           // HAL, пины (FAN, LD2, моторы, концевики)
 #include "motor_control.h"  // motor_enable, motor_*_until_endstop, motor_*_steps
 #include "transport.h"  // transport_ping_agent/init/spin/publish + калибровка
@@ -29,13 +30,13 @@ osMessageQueueId_t cmdQueueHandle;
 static osThreadId_t defaultTaskHandle;
 static const osThreadAttr_t defaultTask_attributes = {
     .name = "defaultTask",
-    .stack_size = 3000 * 4,
+    .stack_size = DEFAULT_TASK_STACK_SIZE,
     .priority = (osPriority_t)osPriorityNormal,
 };
 static osThreadId_t ros2TaskExecutorHandle;
 static const osThreadAttr_t ros2TaskExecutor_attributes = {
     .name = "ros2TaskExecutor",
-    .stack_size = 1024 * 4,
+    .stack_size = EXECUTOR_TASK_STACK_SIZE,
     .priority = (osPriority_t)osPriorityNormal,
 };
 
@@ -45,7 +46,7 @@ void led_blink(int count) {
   for (int i = 0; i < count; i++) {
     // HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
-    osDelay(100);
+    osDelay(LED_BLINK_MS);
     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
   }
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
@@ -62,13 +63,13 @@ static uint32_t calibrate_axis_pan(void) {
   if (motor_pan_until_endstop(PAN_DIR_LEFT) == UINT32_MAX) {
     return UINT32_MAX;  // левый концевик не сработал
   }
-  osDelay(500);
+  osDelay(CALIB_PAUSE_MS);
 
   uint32_t steps = motor_pan_until_endstop(PAN_DIR_RIGHT);
   if (steps == UINT32_MAX || steps == 0) {
     return UINT32_MAX;  // правый концевик не сработал (или хода нет)
   }
-  osDelay(500);
+  osDelay(CALIB_PAUSE_MS);
 
   motor_pan_steps(steps / 2, PAN_DIR_LEFT);  // возврат в середину
   transport_set_pan_zero();                  // середина = 0° (панорама)
@@ -79,13 +80,13 @@ static uint32_t calibrate_axis_tilt(void) {
   if (motor_tilt_until_endstop(TILT_DIR_FRONT) == UINT32_MAX) {
     return UINT32_MAX;  // передний концевик не сработал
   }
-  osDelay(500);
+  osDelay(CALIB_PAUSE_MS);
 
   uint32_t steps = motor_tilt_until_endstop(TILT_DIR_REAR);
   if (steps == UINT32_MAX || steps == 0) {
     return UINT32_MAX;  // задний концевик не сработал (или хода нет)
   }
-  osDelay(500);
+  osDelay(CALIB_PAUSE_MS);
 
   motor_tilt_steps(steps / 2, TILT_DIR_FRONT);  // возврат в середину
   transport_set_tilt_zero();                    // середина = 0° (тильт)
@@ -128,13 +129,15 @@ void Ros2TaskExecutor(void* argument) {
     // Первый параметр — handle (дескриптор/ручка) очереди — cmdQueueHandle.
     // Второй — куда сохранить сообщение (&cmd — адрес переменной cmd).
     // Третий — NULL (не используем, можно передать 0).
-    // Последний — таймаут (время ожидания) в миллисекундах (100 мс).
+    // Последний — таймаут (время ожидания) в миллисекундах
+    // (CMD_QUEUE_TIMEOUT_MS).
     //
-    // Если за 100 мс сообщение пришло → возвращает osOK.
-    // Если за 100 мс сообщения НЕТ → возвращает не osOK (таймаут).
-    // Таймаут нужен чтобы Qt могла остановить мотор — если Qt молчит,
-    // значит мышь не двигается, и мотор не нужен.
-    if (osMessageQueueGet(cmdQueueHandle, &cmd, NULL, 100) == osOK) {
+    // Если за CMD_QUEUE_TIMEOUT_MS сообщение пришло → возвращает osOK.
+    // Если за CMD_QUEUE_TIMEOUT_MS сообщения НЕТ → возвращает не osOK
+    // (таймаут). Таймаут нужен чтобы Qt могла остановить мотор — если Qt
+    // молчит, значит мышь не двигается, и мотор не нужен.
+    if (osMessageQueueGet(cmdQueueHandle, &cmd, NULL, CMD_QUEUE_TIMEOUT_MS) ==
+        osOK) {
       // ---------------------------------------------------------------
       // КОМАНДА ПРИШЛА
       // ---------------------------------------------------------------
@@ -185,13 +188,13 @@ void StartDefaultTask(void* argument) {
   // до тех пор, пока он не появится.
   while (!transport_ping_agent()) {
     led_blink(9);
-    osDelay(2000);
+    osDelay(AGENT_POLL_DELAY_MS);
   }
 
   if (!transport_init()) {
     while (1) {
       led_blink(9);
-      osDelay(500);
+      osDelay(ERROR_BLINK_MS);
     }
   }
 
@@ -210,7 +213,7 @@ void StartDefaultTask(void* argument) {
     // опубликовать статус турели: концевики, температура, вентилятор, углы
     transport_publish_turret_data();
 
-    osDelay(10);
+    osDelay(TASK_LOOP_DELAY_MS);
   }
 }
 

@@ -67,7 +67,7 @@ static uint32_t last_publish_ms = 0;
 static uint32_t last_temp_read_ms = 0;
 
 // Последние достоверные углы энкодеров (для фильтра скачков в publish_encoders)
-static int16_t last_enc1 = -1, last_enc2 = -1;
+static int16_t last_enc1 = ENC_INVALID, last_enc2 = ENC_INVALID;
 
 // Счётчик сбоев чтения энкодеров с момента старта (публикуется 3-м элементом).
 static uint32_t encoder_read_errors = 0;
@@ -78,7 +78,7 @@ static uint32_t encoder_read_errors = 0;
 // pan_accum/tilt_accum — накопленный угол в счётчиках (монотонно растёт
 // при вращении в одну сторону независимо от обёртки).
 // ----------------------------------------------------------------------------
-static int16_t prev_enc1 = -1, prev_enc2 = -1;
+static int16_t prev_enc1 = ENC_INVALID, prev_enc2 = ENC_INVALID;
 static int32_t pan_accum = 0, tilt_accum = 0;
 
 // Ноль (накопленный угол в «средней» позиции) и флаг готовности. Устанавливает
@@ -128,8 +128,8 @@ static void cmd_callback(const void* msgin) {
 // Например: 4090 -> 5 даёт +11 (переход через ноль), а не -4085.
 static int16_t wrap_delta(int16_t cur, int16_t prev) {
   int32_t d = (int32_t)cur - (int32_t)prev;
-  if (d > 2048) d -= 4096;
-  if (d < -2048) d += 4096;
+  if (d > ENC_HALF_RANGE) d -= ENC_COUNTS_PER_TURN;
+  if (d < -ENC_HALF_RANGE) d += ENC_COUNTS_PER_TURN;
   return (int16_t)d;
 }
 
@@ -137,8 +137,7 @@ static int16_t wrap_delta(int16_t cur, int16_t prev) {
 //   меньше ENC_DEADBAND — шум шины (не накапливаем, угол не дрожит в покое);
 //   больше ENC_REANCHOR — длинный пропуск/сбой чтения (не доверяем дельте,
 //   просто закрепляемся на новом значении, без ложного скачка ±4096).
-#define ENC_DEADBAND 4
-#define ENC_REANCHOR 1024
+// (ENC_DEADBAND/ENC_REANCHOR — см. constants.h)
 
 // Накопить дельту непрерывного угла с защитой от шума шины.
 // cur — текущее отфильтрованное значение; prev — предыдущее (обновляется).
@@ -179,7 +178,8 @@ void transport_setup(void) {
 // Поток StartDefaultTask крутит это в цикле, пока агент не появится.
 bool transport_ping_agent(void) {
   transport_setup();
-  return rmw_uros_ping_agent(100, 3) == RMW_RET_OK;
+  return rmw_uros_ping_agent(AGENT_PING_TIMEOUT_MS, AGENT_PING_ATTEMPTS) ==
+         RMW_RET_OK;
 }
 
 // Полная инициализация micro-ROS. Возвращает true при успехе.
@@ -236,8 +236,9 @@ bool transport_init(void) {
     return false;
   }
   std_msgs__msg__Int32MultiArray__init(&as5600_raw_msg);
-  // 3 элемента: [M1, M2, счётчик ошибок чтения]
-  rosidl_runtime_c__int32__Sequence__init(&as5600_raw_msg.data, 3);
+  // AS5600_MSG_ELEMENTS элементов: [M1, M2, счётчик ошибок чтения]
+  rosidl_runtime_c__int32__Sequence__init(&as5600_raw_msg.data,
+                                          AS5600_MSG_ELEMENTS);
 
   // 6. Подписчик на топик PID_TOPIC_CMD — принимает TurretCommand от Qt.
   if (rclc_subscription_init_default(
@@ -250,8 +251,8 @@ bool transport_init(void) {
 
   // 7. Executor (исполнитель): умеет вызывать коллбэки при получении
   //   сообщений. transport_spin_some() будет проверять, не пришло ли что-то.
-  if (rclc_executor_init(&ros2_executor, &ros2_support.context, 2,
-                         &ros2_allocator) != RCL_RET_OK) {
+  if (rclc_executor_init(&ros2_executor, &ros2_support.context,
+                         ROS_EXECUTOR_HANDLES, &ros2_allocator) != RCL_RET_OK) {
     return false;
   }
 
@@ -291,7 +292,9 @@ bool transport_init(void) {
 
 // Проверка входящих сообщений. Если от Qt пришла команда — executor вызовет
 // cmd_callback, и команда окажется в очереди cmdQueueHandle.
-void transport_spin_some(void) { rclc_executor_spin_some(&ros2_executor, 10); }
+void transport_spin_some(void) {
+  rclc_executor_spin_some(&ros2_executor, ROS_SPIN_TIMEOUT_MS);
+}
 
 // Публикация статуса турели: концевики (маска), температура, вентилятор, углы.
 // Углы pan_angle/tilt_angle обновляются в transport_publish_encoders.
@@ -305,16 +308,16 @@ void transport_publish_turret_data(void) {
   uint8_t mask = 0;
   mask |= (HAL_GPIO_ReadPin(SWITCH_HOR_LEFT_GPIO_Port, SWITCH_HOR_LEFT_Pin) ==
            GPIO_PIN_RESET)
-          << 0;
+          << ENSTOP_BIT_HOR_LEFT;
   mask |= (HAL_GPIO_ReadPin(SWITCH_HOR_RIGHT_GPIO_Port, SWITCH_HOR_RIGHT_Pin) ==
            GPIO_PIN_RESET)
-          << 1;
+          << ENSTOP_BIT_HOR_RIGHT;
   mask |= (HAL_GPIO_ReadPin(SWITCH_VERT_FRONT_GPIO_Port,
                             SWITCH_VERT_FRONT_Pin) == GPIO_PIN_RESET)
-          << 2;
+          << ENSTOP_BIT_VERT_FRONT;
   mask |= (HAL_GPIO_ReadPin(SWITCH_VERT_REAR_GPIO_Port, SWITCH_VERT_REAR_Pin) ==
            GPIO_PIN_RESET)
-          << 3;
+          << ENSTOP_BIT_VERT_REAR;
 
   // Состояние вентилятора читаем прямо с пина
   uint8_t fan = (HAL_GPIO_ReadPin(FAN_GPIO_Port, FAN_Pin) == GPIO_PIN_SET);
@@ -324,7 +327,7 @@ void transport_publish_turret_data(void) {
   // время движения статус уходил бы на каждой итерации (10 Гц); теперь углы
   // уходят в статусе раз в 250 мс (4 Гц).
   bool changed = (mask != last_switch_mask) || (fan != last_fan_enable);
-  bool heartbeat = ((uint32_t)(now - last_publish_ms) >= 250u);
+  bool heartbeat = ((uint32_t)(now - last_publish_ms) >= STATUS_HEARTBEAT_MS);
   if (!changed && !heartbeat) {
     return;
   }
@@ -332,12 +335,13 @@ void transport_publish_turret_data(void) {
   last_fan_enable = fan;
   last_publish_ms = now;
 
-  // Температуру (I2C) перечитываем только раз в 1 сек, чтобы не грузить шину
-  if ((uint32_t)(now - last_temp_read_ms) >= 1000u) {
+  // Температуру (I2C) перечитываем только раз в TEMP_READ_MS, чтобы не грузить
+  // шину
+  if ((uint32_t)(now - last_temp_read_ms) >= TEMP_READ_MS) {
     last_temp_read_ms = now;
     is_lm75_present = lm75_is_present();
     ros2_turret_status.temperature =
-        is_lm75_present ? lm75_read_temperature() : -1000.0f;
+        is_lm75_present ? lm75_read_temperature() : LM75_TEMP_ABSENT;
   }
 
   ros2_turret_status.switch_mask = mask;
@@ -357,15 +361,19 @@ void transport_publish_turret_data(void) {
 // Счётчик data[2] показывает, что реально происходило с шиной, не маскируясь
 // фильтром.
 //
+// После калибровки data[0]/data[1] — углы в градусах (0 = середина хода),
+// как в топике статуса. До калибровки — сырые счётчики AS5600 (0..4095),
+// удобные для отладки шины.
+//
 // Вызывается каждые 10 мс из StartDefaultTask, но опрашиваем энкодеры не чаще
-// раза в 100 мс (10 Гц) — так накопление угла с учётом обёртки остаётся
-// точным при быстром вращении. Сырые углы в топик AS5600 и углы статуса
+// раз в 100 мс (10 Гц) — так накопление угла с учётом обёртки остаётся
+// точным при быстром вращении. Данные в топик AS5600 и углы статуса
 // публикуются раз в 250 мс (4 Гц).
 void transport_publish_encoders(void) {
   uint32_t now = HAL_GetTick();
 
-  // Опрос не чаще раза в 100 мс
-  if ((uint32_t)(now - last_enc_publish_ms) < 100u) {
+  // Опрос не чаще раза в ENC_SAMPLE_MS
+  if ((uint32_t)(now - last_enc_publish_ms) < ENC_SAMPLE_MS) {
     return;
   }
   last_enc_publish_ms = now;
@@ -394,21 +402,35 @@ void transport_publish_encoders(void) {
     tilt_accum += enc_accumulate_delta(e2, &prev_enc2);
   }
 
-  as5600_raw_msg.data.data[0] = e1;  // M1 — горизонталь
-  as5600_raw_msg.data.data[1] = e2;  // M2 — вертикаль
+  // После калибровки публикуем углы в градусах (0 = середина хода), как в
+  // статусе; до калибровки — сырые счётчики AS5600 (0..4095) для отладки.
+  as5600_raw_msg.data.data[0] =
+      pan_calibrated
+          ? (int32_t)((pan_accum - pan_zero) * DEG_PER_TURN /
+                      (float)ENC_COUNTS_PER_TURN)
+          : e1;
+  as5600_raw_msg.data.data[1] =
+      tilt_calibrated
+          ? (int32_t)((tilt_accum - tilt_zero) * DEG_PER_TURN /
+                      (float)ENC_COUNTS_PER_TURN)
+          : e2;
   as5600_raw_msg.data.data[2] = (int32_t)encoder_read_errors;
 
   // Углы для статуса: (накопленный угол - ноль) в целых градусах. Слева от
   // нуля — отрицательные, справа — положительные. До калибровки — 0.
   ros2_turret_status.pan_angle =
-      pan_calibrated ? (int32_t)((pan_accum - pan_zero) * 360.0f / 4096.0f)
-                     : 0;
+      pan_calibrated
+          ? (int32_t)((pan_accum - pan_zero) * DEG_PER_TURN /
+                      (float)ENC_COUNTS_PER_TURN)
+          : 0;
   ros2_turret_status.tilt_angle =
-      tilt_calibrated ? (int32_t)((tilt_accum - tilt_zero) * 360.0f / 4096.0f)
-                      : 0;
+      tilt_calibrated
+          ? (int32_t)((tilt_accum - tilt_zero) * DEG_PER_TURN /
+                      (float)ENC_COUNTS_PER_TURN)
+          : 0;
 
-  // Сырые углы AS5600 публикуем 4 раза в секунду (4 Гц).
-  if ((uint32_t)(now - last_as5600_pub_ms) >= 250u) {
+  // Данные AS5600 публикуем раз в AS5600_PUBLISH_MS (4 Гц).
+  if ((uint32_t)(now - last_as5600_pub_ms) >= AS5600_PUBLISH_MS) {
     last_as5600_pub_ms = now;
     rcl_publish(&ros2_as5600_publisher, &as5600_raw_msg, NULL);
   }

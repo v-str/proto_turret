@@ -9,19 +9,17 @@
 #include "sensors.h"
 
 #include "cmsis_os.h"  // osDelay — пауза между ретраями I2C
+#include "constants.h"  // адреса LM75/AS5600, коды ошибок, пороги
 
 // Хендлы I2C определяются в main.c (глобальные), объявляем их тут как extern
 extern I2C_HandleTypeDef hi2c1;
 extern I2C_HandleTypeDef hi2c2;
 extern I2C_HandleTypeDef hi2c3;
 
-#define LM75_TEMP_ADDRESS (0x48 << 1)  // адрес LM75 (сдвинут на 1 бит для I2C)
-#define AS5600_I2C_ADDR (0x36 << 1)    // 7-бит адрес AS5600
-#define AS5600_REG_ANGLE 0x0C  // регистр угла: 2 байта (старший/младший)
-
 // проверка, отвечает ли датчик LM75 на шине (1 = есть, 0 = нет)
 uint8_t lm75_is_present(void) {
-  return (HAL_I2C_IsDeviceReady(&hi2c3, LM75_TEMP_ADDRESS, 3, 100) == HAL_OK);
+  return (HAL_I2C_IsDeviceReady(&hi2c3, LM75_TEMP_ADDRESS, I2C_READY_TRIALS,
+                                I2C_READY_TIMEOUT_MS) == HAL_OK);
 }
 
 /*
@@ -31,15 +29,17 @@ uint8_t lm75_is_present(void) {
 float lm75_read_temperature(void) {
   uint8_t buffer[2];
 
-  // пробуем прочитать из датчика, адрес для чтения 0x00, читаем 2 байта
+  // пробуем прочитать из датчика, адрес для чтения LM75_REG_TEMP, читаем
+  // LM75_TEMP_BYTES байт
   HAL_StatusTypeDef status = HAL_I2C_Mem_Read(
-      &hi2c3, LM75_TEMP_ADDRESS, 0x00, I2C_MEMADD_SIZE_8BIT, buffer, 2, 50);
+      &hi2c3, LM75_TEMP_ADDRESS, LM75_REG_TEMP, I2C_MEMADD_SIZE_8BIT, buffer,
+      LM75_TEMP_BYTES, I2C_MEM_TIMEOUT_MS);
 
   if (status != HAL_OK) {
     // Диагностика: разные коды = разные причины.
-    if (status == HAL_BUSY) return -1000.0f;     // периферия была занята
-    if (status == HAL_TIMEOUT) return -1001.0f;  // обмен не успел за таймаут
-    return -1002.0f;  // HAL_ERROR: датчик не ответил (NACK)
+    if (status == HAL_BUSY) return LM75_TEMP_ABSENT;     // периферия была занята
+    if (status == HAL_TIMEOUT) return LM75_TEMP_TIMEOUT;  // обмен не успел за таймаут
+    return LM75_TEMP_ERROR;  // HAL_ERROR: датчик не ответил (NACK)
   }
 
   // объединяем эти 2 байта в одну переменную
@@ -47,7 +47,7 @@ float lm75_read_temperature(void) {
 
   // показания температуры в этом датчике лежат в старших 9 битах, в младших 7
   // лежит мусор либо 0, поэтому избавимся от них
-  return (float)(raw >> 7) * 0.5f;
+  return (float)(raw >> LM75_TEMP_SHIFT) * LM75_TEMP_LSB;
 }
 
 // Жёсткое восстановление «залипшей» I2C-шины.
@@ -67,18 +67,24 @@ static void i2c_bus_recover(I2C_HandleTypeDef* hi2c) {
 
   // Пины и сброс периферии зависят от того, какая шина I2C.
   if (hi2c->Instance == I2C1) {
-    scl_port = GPIOB;  scl_pin = GPIO_PIN_6;   // I2C1_SCL
-    sda_port = GPIOB;  sda_pin = GPIO_PIN_7;   // I2C1_SDA
+    scl_port = I2C1_SCL_PORT;
+    scl_pin = I2C1_SCL_PIN;
+    sda_port = I2C1_SDA_PORT;
+    sda_pin = I2C1_SDA_PIN;
     __HAL_RCC_I2C1_FORCE_RESET();
     __HAL_RCC_I2C1_RELEASE_RESET();
   } else if (hi2c->Instance == I2C2) {
-    scl_port = GPIOB;  scl_pin = GPIO_PIN_10;  // I2C2_SCL
-    sda_port = GPIOC;  sda_pin = GPIO_PIN_12;  // I2C2_SDA
+    scl_port = I2C2_SCL_PORT;
+    scl_pin = I2C2_SCL_PIN;
+    sda_port = I2C2_SDA_PORT;
+    sda_pin = I2C2_SDA_PIN;
     __HAL_RCC_I2C2_FORCE_RESET();
     __HAL_RCC_I2C2_RELEASE_RESET();
   } else if (hi2c->Instance == I2C3) {
-    scl_port = GPIOA;  scl_pin = GPIO_PIN_8;   // I2C3_SCL
-    sda_port = GPIOC;  sda_pin = GPIO_PIN_9;   // I2C3_SDA
+    scl_port = I2C3_SCL_PORT;
+    scl_pin = I2C3_SCL_PIN;
+    sda_port = I2C3_SDA_PORT;
+    sda_pin = I2C3_SDA_PIN;
     __HAL_RCC_I2C3_FORCE_RESET();
     __HAL_RCC_I2C3_RELEASE_RESET();
   } else {
@@ -102,21 +108,21 @@ static void i2c_bus_recover(I2C_HandleTypeDef* hi2c) {
   // состояние I2C у датчика, и он освобождает SDA.
   HAL_GPIO_WritePin(scl_port, scl_pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(sda_port, sda_pin, GPIO_PIN_SET);
-  osDelay(1);
-  for (int i = 0; i < 9; i++) {
+  osDelay(I2C_RECOVERY_DELAY_MS);
+  for (int i = 0; i < I2C_RECOVERY_CLOCKS; i++) {
     HAL_GPIO_WritePin(scl_port, scl_pin, GPIO_PIN_RESET);
-    osDelay(1);
+    osDelay(I2C_RECOVERY_DELAY_MS);
     HAL_GPIO_WritePin(scl_port, scl_pin, GPIO_PIN_SET);
-    osDelay(1);
+    osDelay(I2C_RECOVERY_DELAY_MS);
   }
 
   // STOP-условие: поднимаем SDA при высоком SCL.
   HAL_GPIO_WritePin(sda_port, sda_pin, GPIO_PIN_RESET);
-  osDelay(1);
+  osDelay(I2C_RECOVERY_DELAY_MS);
   HAL_GPIO_WritePin(scl_port, scl_pin, GPIO_PIN_SET);
-  osDelay(1);
+  osDelay(I2C_RECOVERY_DELAY_MS);
   HAL_GPIO_WritePin(sda_port, sda_pin, GPIO_PIN_SET);
-  osDelay(1);
+  osDelay(I2C_RECOVERY_DELAY_MS);
   HAL_GPIO_WritePin(scl_port, scl_pin, GPIO_PIN_RESET);
 
   // Возвращаем I2C в строй: MspInit вернёт пины в режим AF и включит такты.
@@ -134,35 +140,39 @@ int16_t as5600_read_angle_bus(I2C_HandleTypeDef* hi2c) {
   HAL_StatusTypeDef status = HAL_ERROR;
 
   // Ретраи: на движущейся турели бывают помехи на шине, и чтение может
-  // срываться. Пробуем до 5 раз; между попытками — жёсткое восстановление
-  // шины (i2c_bus_recover), чтобы канал сам оживал, а не вис до перезапитки.
-  for (int attempt = 0; attempt < 5; attempt++) {
+  // срываться. Пробуем до AS5600_READ_ATTEMPTS раз; между попытками — жёсткое
+  // восстановление шины (i2c_bus_recover), чтобы канал сам оживал, а не вис до
+  // перезапитки.
+  for (int attempt = 0; attempt < AS5600_READ_ATTEMPTS; attempt++) {
     // Если периферия уже не в READY (залипла после сбоя) — восстанавливаем.
     if (HAL_I2C_GetState(hi2c) != HAL_I2C_STATE_READY) {
       i2c_bus_recover(hi2c);
     }
 
-    uint8_t buffer[2];
+    uint8_t buffer[AS5600_REG_WIDTH];
 
-    // читаем 2 байта угла начиная с регистра 0x0C (старший байт)
+    // читаем AS5600_REG_WIDTH байт угла начиная с регистра AS5600_REG_ANGLE
+    // (старший байт)
     status = HAL_I2C_Mem_Read(hi2c, AS5600_I2C_ADDR, AS5600_REG_ANGLE,
-                              I2C_MEMADD_SIZE_8BIT, buffer, 2, 50);
+                              I2C_MEMADD_SIZE_8BIT, buffer, AS5600_REG_WIDTH,
+                              I2C_MEM_TIMEOUT_MS);
 
     if (status == HAL_OK) {
       // объединяем байты в 16 бит, реальные данные — в старших 12 битах
-      return (int16_t)(((buffer[0] << 8) | buffer[1]) >> 4);
+      return (int16_t)(((buffer[0] << 8) | buffer[1]) >>
+                       AS5600_ANGLE_SHIFT);
     }
 
     // неудача — жёстко восстанавливаем шину и пробуем снова
     i2c_bus_recover(hi2c);
-    osDelay(1);
+    osDelay(I2C_RECOVERY_DELAY_MS);
   }
 
   // все попытки провалились — возвращаем код ошибки
-  if (status == HAL_ERROR) return -1;
-  if (status == HAL_TIMEOUT) return -2;
-  if (status == HAL_BUSY) return -3;
-  return -4;  // другой код
+  if (status == HAL_ERROR) return AS5600_ERR_HAL_ERROR;
+  if (status == HAL_TIMEOUT) return AS5600_ERR_TIMEOUT;
+  if (status == HAL_BUSY) return AS5600_ERR_BUSY;
+  return AS5600_ERR_OTHER;  // другой код
 }
 
 // энкодер M1 (горизонталь) на шине I2C1
@@ -172,18 +182,18 @@ int16_t as5600_read_hor_angle(void) { return as5600_read_angle_bus(&hi2c1); }
 int16_t as5600_read_vert_angle(void) { return as5600_read_angle_bus(&hi2c2); }
 
 /*
-стабильное чтение угла AS5600: читаем 3 раза подряд и берём медиану.
-Длинные провода дают редкие «битовые» сбои — транзакция проходит успешно, но
-байты угла приходят испорченными (выбросы до десятков счётчиков). Медиана
+стабильное чтение угла AS5600: читаем AS5600_MEDIAN_READS раз подряд и берём
+медиану. Длинные провода дают редкие «битовые» сбои — транзакция проходит
+успешно, но байты угла приходят испорченными. Медиана
 отбрасывает выброс, пока хотя бы два чтения из трёх достоверны.
-Возвращает 0..4095 или код ошибки (< 0), если все три чтения провалились.
+Возвращает 0..4095 или код ошибки (< 0), если все чтения провалились.
 */
 int16_t as5600_read_stable_angle_bus(I2C_HandleTypeDef* hi2c) {
-  int16_t v[3];
+  int16_t v[AS5600_MEDIAN_READS];
   int n = 0;
-  int16_t last_err = -4;
+  int16_t last_err = AS5600_ERR_OTHER;
 
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < AS5600_MEDIAN_READS; i++) {
     int16_t r = as5600_read_angle_bus(hi2c);
     if (r >= 0) {
       v[n++] = r;
@@ -204,9 +214,21 @@ int16_t as5600_read_stable_angle_bus(I2C_HandleTypeDef* hi2c) {
 
   // n == 3: медиана — средний по величине
   int16_t a = v[0], b = v[1], c = v[2];
-  if (a > b) { int16_t t = a; a = b; b = t; }
-  if (b > c) { int16_t t = b; b = c; c = t; }
-  if (a > b) { int16_t t = a; a = b; b = t; }
+  if (a > b) {
+    int16_t t = a;
+    a = b;
+    b = t;
+  }
+  if (b > c) {
+    int16_t t = b;
+    b = c;
+    c = t;
+  }
+  if (a > b) {
+    int16_t t = a;
+    a = b;
+    b = t;
+  }
   return b;
 }
 
@@ -228,13 +250,12 @@ ENC_JUMP_MAX от предыдущего (с учётом обёртки 4095->0
 last — указатель на последнее достоверное значение (инициализировать -1).
 */
 int16_t filter_encoder_value(int16_t raw, int16_t* last) {
-// Предел 1000: при калибровке мотор делает ~250 шаг/с (2 мс/шаг), угол между
-// опросами (100 мс) меняется на десятки счётчиков — помехами считается скачок
-// заметно больше.
-#define ENC_JUMP_MAX 1000
+// Предел ENC_JUMP_MAX: при калибровке мотор делает ~250 шаг/с (2 мс/шаг), угол
+// между опросами (ENC_SAMPLE_MS) меняется на десятки счётчиков — помехой
+// считается скачок заметно больше. (ENC_JUMP_MAX — см. constants.h)
 
   if (raw < 0) {
-    return *last < 0 ? -1 : *last;
+    return *last < 0 ? ENC_INVALID : *last;
   }
   if (*last < 0) {
     *last = raw;
@@ -243,8 +264,8 @@ int16_t filter_encoder_value(int16_t raw, int16_t* last) {
 
   // минимальное расстояние по кругу 0..4095
   int diff = raw - *last;
-  if (diff > 2048) diff -= 4096;
-  if (diff < -2048) diff += 4096;
+  if (diff > ENC_HALF_RANGE) diff -= ENC_COUNTS_PER_TURN;
+  if (diff < -ENC_HALF_RANGE) diff += ENC_COUNTS_PER_TURN;
   if (diff < 0) diff = -diff;
 
   if (diff <= ENC_JUMP_MAX) {
@@ -252,6 +273,4 @@ int16_t filter_encoder_value(int16_t raw, int16_t* last) {
     return raw;
   }
   return *last;  // мусор — держим последнее достоверное
-
-#undef ENC_JUMP_MAX
 }

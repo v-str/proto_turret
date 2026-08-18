@@ -13,6 +13,7 @@
 #include "turret_init.h"
 
 #include "cmsis_os.h"      // osKernelInitialize — инициализация планировщика
+#include "constants.h"  // скорости I2C, бод UART, DMA/TIM константы
 #include "main.h"          // HAL, пины, BSP (светодиод/кнопка), Error_Handler
 #include "turret_tasks.h"  // TasksInit — очередь команд + создание потоков
 
@@ -121,18 +122,18 @@ static void MX_DMA_Init(void) {
   __HAL_RCC_DMA1_CLK_ENABLE();
 
   // DMA1_Stream5 — приём USART2
-  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 5, 0);
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, DMA_PRIORITY, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
 
   // DMA1_Stream6 — передача USART2
-  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 5, 0);
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, DMA_PRIORITY, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
 }
 
 // USART2 — канал micro-ROS: 115200 бит/с, 8 бит, без чётности, 1 стоп-бит.
 static void MX_USART2_UART_Init(void) {
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = UART_BAUDRATE;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -147,7 +148,7 @@ static void MX_USART2_UART_Init(void) {
 // I2C1 — энкодер M1 (горизонталь): 400 кГц, 7-бит адресация.
 static void MX_I2C1_Init(void) {
   hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 400000;
+  hi2c1.Init.ClockSpeed = I2C1_CLOCK_HZ;
   hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
@@ -164,7 +165,7 @@ static void MX_I2C1_Init(void) {
 // и плохим контактам, чем 400 кГц; частота всё равно далека от предела AS5600).
 static void MX_I2C2_Init(void) {
   hi2c2.Instance = I2C2;
-  hi2c2.Init.ClockSpeed = 100000;
+  hi2c2.Init.ClockSpeed = I2C2_CLOCK_HZ;
   hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
@@ -180,7 +181,7 @@ static void MX_I2C2_Init(void) {
 // I2C3 — датчик температуры LM75: 100 кГц (не требует быстрой шины).
 static void MX_I2C3_Init(void) {
   hi2c3.Instance = I2C3;
-  hi2c3.Init.ClockSpeed = 100000;
+  hi2c3.Init.ClockSpeed = I2C3_CLOCK_HZ;
   hi2c3.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c3.Init.OwnAddress1 = 0;
   hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
@@ -197,11 +198,12 @@ static void MX_I2C3_Init(void) {
 static void MX_TIM10_Init(void) {
   TIM_OC_InitTypeDef sConfigOC = {0};
 
-  // Прескалер 83 и период 249: счётчик тактируется с 1 МГц, период 250 мкс
+  // Прескалер TIM_PRESCALER и период TIM10_OC_PERIOD: счётчик тактируется
+  // с 1 МГц, период 250 мкс
   htim10.Instance = TIM10;
-  htim10.Init.Prescaler = 83;
+  htim10.Init.Prescaler = TIM_PRESCALER;
   htim10.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim10.Init.Period = 249;
+  htim10.Init.Period = TIM10_OC_PERIOD;
   htim10.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim10.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim10) != HAL_OK) {
@@ -225,11 +227,12 @@ static void MX_TIM10_Init(void) {
 static void MX_TIM11_Init(void) {
   TIM_OC_InitTypeDef sConfigOC = {0};
 
-  // Прескалер 83 и период 249: счётчик тактируется с 1 МГц, период 250 мкс
+  // Прескалер TIM_PRESCALER и период TIM11_OC_PERIOD: счётчик тактируется
+  // с 1 МГц, период 250 мкс
   htim11.Instance = TIM11;
-  htim11.Init.Prescaler = 83;
+  htim11.Init.Prescaler = TIM_PRESCALER;
   htim11.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim11.Init.Period = 249;
+  htim11.Init.Period = TIM11_OC_PERIOD;
   htim11.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim11.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim11) != HAL_OK) {
@@ -252,11 +255,12 @@ static void MX_TIM11_Init(void) {
 static void MX_TIM14_Init(void) {
   TIM_OC_InitTypeDef sConfigOC = {0};
 
-  // Прескалер 83 и период 49: счётчик 1 МГц, период 50 мкс (20 кГц PWM)
+  // Прескалер TIM_PRESCALER и период TIM14_PWM_PERIOD: счётчик 1 МГц,
+  // период 50 мкс (20 кГц PWM)
   htim14.Instance = TIM14;
-  htim14.Init.Prescaler = 83;
+  htim14.Init.Prescaler = TIM_PRESCALER;
   htim14.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim14.Init.Period = 49;
+  htim14.Init.Period = TIM14_PWM_PERIOD;
   htim14.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim14.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim14) != HAL_OK) {

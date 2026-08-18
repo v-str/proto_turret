@@ -9,11 +9,8 @@
 #include "main.h"
 
 #include "cmsis_os.h"     // osKernelStart — запуск планировщика FreeRTOS
+#include "constants.h"  // RCC_PLL*, BUTTON_RELEASED/PRESSED
 #include "turret_init.h"  // turret_init — вся инициализация турели
-
-// --- Пользовательская кнопка (Blue button) ---
-#define BUTTON_RELEASED 0U
-#define BUTTON_PRESSED 1U
 
 // Состояние кнопки: обновляет прерывание EXTI (HAL_GPIO_EXTI_Callback ниже)
 __IO uint32_t BspButtonState = BUTTON_RELEASED;
@@ -51,11 +48,11 @@ void SystemClock_Config(void) {
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 16;
-  RCC_OscInitStruct.PLL.PLLN = 336;
+  RCC_OscInitStruct.PLL.PLLM = RCC_PLLM;
+  RCC_OscInitStruct.PLL.PLLN = RCC_PLLN;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
-  RCC_OscInitStruct.PLL.PLLQ = 2;
-  RCC_OscInitStruct.PLL.PLLR = 2;
+  RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ;
+  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
   }
