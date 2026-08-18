@@ -11,7 +11,7 @@
 #include <proto_turret_interfaces/msg/turret_command.h>
 #include <stdint.h>  // UINT32_MAX
 
-#include "cmsis_os.h"       // osMessageQueueNew/Get/Put, osThreadNew, osDelay
+#include "cmsis_os.h"  // osMessageQueueNew/Get/Put, osThreadNew, osDelay
 #include "constants.h"  // стеки потоков, задержки, CALIB_PAUSE_MS, AGENT_POLL_DELAY_MS
 #include "main.h"           // HAL, пины (FAN, LD2, моторы, концевики)
 #include "motor_control.h"  // motor_enable, motor_*_until_endstop, motor_*_steps
@@ -126,7 +126,7 @@ void Ros2TaskExecutor(void* argument) {
 
   for (;;) {
     // osMessageQueueGet — забирает сообщение из очереди.
-    // Первый параметр — handle (дескриптор/ручка) очереди — cmdQueueHandle.
+    // Первый параметр — дескриптор очереди — cmdQueueHandle.
     // Второй — куда сохранить сообщение (&cmd — адрес переменной cmd).
     // Третий — NULL (не используем, можно передать 0).
     // Последний — таймаут (время ожидания) в миллисекундах
@@ -146,32 +146,16 @@ void Ros2TaskExecutor(void* argument) {
       HAL_GPIO_WritePin(FAN_GPIO_Port, FAN_Pin,
                         cmd.fan_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
-      // Управление мотором M1 (pan):
-      // cmd = command (команда)
-      // pan_vel = pan velocity (скорость поворота), приходит от Qt.
-      // Если НЕ ноль — крутим. Если ноль — стоп.
-      // 0.0f — ноль, f = float (число с плавающей точкой)
-      if (cmd.pan_vel != 0.0f) {
-        // Определяем направление:
-        // pan_vel > 0 (мышь вправо)  → dir = 1 (CW — по часовой)
-        // pan_vel < 0 (мышь влево)   → dir = 0 (CCW — против часовой)
-        // int dir = cmd.pan_vel > 0.0f ? 1 : 0;
+      motor_move(&cmd);
 
-        // Запускаем мотор на 10 000 000 шагов.
-        // Это просто "очень много" — условно бесконечно.
-        // Реально мотор крутится пока Qt шлёт команды.
-        // Когда Qt перестанет слать — таймаут 100 мс остановит мотор.
-        // motor_move(10000000, dir);
-      } else {
-        // pan_vel = 0 → Qt говорит "стоп"
-        // Выключаем таймер — мотор перестаёт крутиться
-      }
     } else {
       // ---------------------------------------------------------------
-      // ТАЙМАУТ — Qt молчит 100 мс
+      // ТАЙМАУТ — Qt молчит более 100 мс
       // ---------------------------------------------------------------
       // Значит мышь не двигается, Qt-нода перестала слать команды.
       // Останавливаем мотор, если он ещё крутится.
+      motor_pan_stop();
+      motor_tilt_stop();
     }
   }
 }

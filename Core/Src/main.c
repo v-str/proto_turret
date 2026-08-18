@@ -75,13 +75,13 @@ void SystemClock_Config(void) {
 // Системные коллбэки HAL.
 // ----------------------------------------------------------------------------
 
-// Тайм-база: вызывается из прерывания таймера TIM1 и тикает счётчик
-// миллисекунд HAL_GetTick(). Без этого HAL_GetTick не работает.
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
-  if (htim->Instance == TIM1) {
-    HAL_IncTick();
-  }
-}
+// // Тайм-база: вызывается из прерывания таймера TIM1 и тикает счётчик
+// // миллисекунд HAL_GetTick(). Без этого HAL_GetTick не работает.
+// void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
+//   if (htim->Instance == TIM1) {
+//     HAL_IncTick();
+//   }
+// }
 
 // Прерывание EXTI: пользовательская кнопка нажата → фиксируем состояние.
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {

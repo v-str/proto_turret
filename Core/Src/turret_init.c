@@ -13,7 +13,7 @@
 #include "turret_init.h"
 
 #include "cmsis_os.h"      // osKernelInitialize — инициализация планировщика
-#include "constants.h"  // скорости I2C, бод UART, DMA/TIM константы
+#include "constants.h"     // скорости I2C, бод UART, DMA/TIM константы
 #include "main.h"          // HAL, пины, BSP (светодиод/кнопка), Error_Handler
 #include "turret_tasks.h"  // TasksInit — очередь команд + создание потоков
 
@@ -64,7 +64,8 @@ static void MX_TIM11_Init(void);
 // ----------------------------------------------------------------------------
 // Инициализация пинов GPIO.
 // Выходы: управление шаговыми двигателями (STEP/DIR/EN), вентилятор.
-// Входы: концевики осей (нажат = LOW, т.к. замкнуты на GND при подтяжке к +3.3В).
+// Входы: концевики осей (нажат = LOW, т.к. замкнуты на GND при подтяжке к
+// +3.3В).
 // ----------------------------------------------------------------------------
 static void MX_GPIO_Init(void) {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -77,8 +78,7 @@ static void MX_GPIO_Init(void) {
 
   // Начальные уровни на выходах порта A (все в LOW):
   // M2_EN, M1_STEP, M1_DIR, M1_EN
-  HAL_GPIO_WritePin(GPIOA,
-                    M2_EN_Pin | M1_STEP_Pin | M1_DIR_Pin | M1_EN_Pin,
+  HAL_GPIO_WritePin(GPIOA, M2_EN_Pin | M1_STEP_Pin | M1_DIR_Pin | M1_EN_Pin,
                     GPIO_PIN_RESET);
 
   // Начальный уровень M2_DIR (порт C) — LOW
@@ -198,7 +198,7 @@ static void MX_I2C3_Init(void) {
 static void MX_TIM10_Init(void) {
   TIM_OC_InitTypeDef sConfigOC = {0};
 
-  // Прескалер TIM_PRESCALER и период TIM10_OC_PERIOD: счётчик тактируется
+  // Прескейлер TIM_PRESCALER и период TIM10_OC_PERIOD: счётчик тактируется
   // с 1 МГц, период 250 мкс
   htim10.Instance = TIM10;
   htim10.Init.Prescaler = TIM_PRESCALER;
@@ -227,7 +227,7 @@ static void MX_TIM10_Init(void) {
 static void MX_TIM11_Init(void) {
   TIM_OC_InitTypeDef sConfigOC = {0};
 
-  // Прескалер TIM_PRESCALER и период TIM11_OC_PERIOD: счётчик тактируется
+  // Прескейлер TIM_PRESCALER и период TIM11_OC_PERIOD: счётчик тактируется
   // с 1 МГц, период 250 мкс
   htim11.Instance = TIM11;
   htim11.Init.Prescaler = TIM_PRESCALER;
@@ -290,24 +290,24 @@ static void MX_TIM14_Init(void) {
 // ----------------------------------------------------------------------------
 void turret_init(void) {
   // --- Периферия ---
-  MX_GPIO_Init();           // пины: моторы, концевики, вентилятор
-  MX_DMA_Init();            // DMA1 (RX/TX для USART2)
-  MX_USART2_UART_Init();    // UART2 — канал micro-ROS
-  MX_I2C1_Init();           // I2C1 — энкодер M1
-  MX_I2C2_Init();           // I2C2 — энкодер M2
-  MX_I2C3_Init();           // I2C3 — датчик температуры LM75
-  MX_TIM10_Init();          // TIM10 — зарезервирован
-  MX_TIM14_Init();          // TIM14 — PWM, зарезервирован
-  MX_TIM11_Init();          // TIM11 — зарезервирован
+  MX_GPIO_Init();         // пины: моторы, концевики, вентилятор
+  MX_DMA_Init();          // DMA1 (RX/TX для USART2)
+  MX_USART2_UART_Init();  // UART2 — канал micro-ROS
+  MX_I2C1_Init();         // I2C1 — энкодер M1
+  MX_I2C2_Init();         // I2C2 — энкодер M2
+  MX_I2C3_Init();         // I2C3 — датчик температуры LM75
+  MX_TIM10_Init();        // TIM10 — зарезервирован
+  MX_TIM14_Init();        // TIM14 — PWM, зарезервирован
+  MX_TIM11_Init();        // TIM11 — зарезервирован
 
   // --- FreeRTOS ---
-  osKernelInitialize();     // инициализация планировщика (до создания потоков)
+  osKernelInitialize();  // инициализация планировщика (до создания потоков)
 
   // --- Задачи ---
-  TasksInit();              // очередь команд + потоки: defaultTask (ROS),
-                            // ros2TaskExecutor, motorTest
+  TasksInit();  // очередь команд + потоки: defaultTask (ROS),
+                // ros2TaskExecutor, motorTest
 
   // --- BSP ---
-  BSP_LED_Init(LED2);       // встроенный светодиод (индикация в потоках)
+  BSP_LED_Init(LED2);  // встроенный светодиод (индикация в потоках)
   BSP_PB_Init(BUTTON_USER, BUTTON_MODE_EXTI);  // кнопка (прерывание EXTI)
 }
