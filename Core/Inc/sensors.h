@@ -38,4 +38,6 @@ int16_t filter_encoder_value(int16_t raw, int16_t* last);
 int32_t calculate_real_pan_angle(int16_t pan_zero);
 int32_t calculate_real_tilt_angle(int16_t pan_zero);
 
+void reset_accum_both();
+
 #endif  // SENSORS_H

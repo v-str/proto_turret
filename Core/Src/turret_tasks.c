@@ -15,6 +15,7 @@
 #include "constants.h"  // стеки потоков, задержки, CALIB_PAUSE_MS, AGENT_POLL_DELAY_MS
 #include "main.h"           // HAL, пины (FAN, LD2, моторы, концевики)
 #include "motor_control.h"  // motor_enable, motor_*_until_endstop, motor_*_steps
+#include "sensors.h"
 #include "transport.h"  // transport_ping_agent/init/spin/publish + калибровка
 
 // ----------------------------------------------------------------------------
@@ -197,7 +198,7 @@ void StartDefaultTask(void* argument) {
     // отладка энкодеров: сырые углы AS5600 [M1, M2] (с фильтром скачков).
     // Заодно обновляет углы для статуса — поэтому вызывается ДО публикации
     // статуса, чтобы PID_TOPIC_STATUS уходил со свежими pan_angle/tilt_angle.
-    transport_publish_encoders();
+    // transport_publish_encoders();
 
     // опубликовать статус турели: концевики, температура, вентилятор, углы
     transport_publish_turret_data();

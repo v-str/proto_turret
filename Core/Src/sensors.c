@@ -329,3 +329,8 @@ int32_t calculate_real_tilt_angle(int16_t pan_zero) {
 
   return (int32_t)(pan_zero - tilt_accum);
 }
+
+void reset_accum_both() {
+  pan_accum = 0;
+  tilt_accum = 0;
+}

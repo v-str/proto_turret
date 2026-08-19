@@ -309,6 +309,9 @@ void transport_publish_turret_data(void) {
   ros2_turret_status.switch_mask = mask;
   ros2_turret_status.fan_enable = (fan != 0);
 
+  ros2_turret_status.pan_angle = calculate_real_pan_angle(pan_zero);
+  ros2_turret_status.tilt_angle = calculate_real_tilt_angle(tilt_zero);
+
   if (rcl_publish(&ros2_turret_status_publisher, &ros2_turret_status, NULL) !=
       RCL_RET_OK) {
     ++temperature_publish_errors;
@@ -353,10 +356,12 @@ void transport_publish_encoders(void) {
 void transport_set_pan_zero(void) {
   pan_zero = 0;
   pan_calibrated = 1;
+  reset_accum_both();
 }
 
 // То же для тильта.
 void transport_set_tilt_zero(void) {
   tilt_zero = 0;
   tilt_calibrated = 1;
+  reset_accum_both();
 }
