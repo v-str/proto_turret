@@ -46,4 +46,7 @@ uint32_t motor_tilt_until_endstop(uint8_t dir);
 void motor_pan_steps(uint32_t steps, uint8_t dir);
 void motor_tilt_steps(uint32_t steps, uint8_t dir);
 
+// PID
+void motor_pid_init();
+
 #endif  // MOTOR_CONTROL_H

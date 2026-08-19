@@ -67,10 +67,10 @@ static uint32_t last_publish_ms = 0;
 static uint32_t last_temp_read_ms = 0;
 
 // Последние достоверные углы энкодеров (для фильтра скачков в publish_encoders)
-static int16_t last_pan_angle = ENC_INVALID, last_tilt_angle = ENC_INVALID;
+// static int16_t last_pan_angle = ENC_INVALID, last_tilt_angle = ENC_INVALID;
 
 // Счётчик сбоев чтения энкодеров с момента старта (публикуется 3-м элементом).
-static uint32_t encoder_read_errors = 0;
+// static uint32_t encoder_read_errors = 0;
 
 // Ноль (накопленный угол в «средней» позиции) и флаг готовности. Устанавливает
 // калибровка через transport_set_pan_zero/tilt_zero.

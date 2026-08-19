@@ -20,6 +20,12 @@ extern I2C_HandleTypeDef hi2c3;
 static int32_t pan_accum = 0, tilt_accum = 0;
 static int16_t prev_pan_angle = ENC_INVALID, prev_tilt_angle = ENC_INVALID;
 
+// статики измерения скорости (сбрасываются вместе с углами при калибровке)
+static int16_t pan_prev_raw = ENC_INVALID;
+static uint32_t pan_prev_time = 0;
+static int16_t tilt_prev_raw = ENC_INVALID;
+static uint32_t tilt_prev_time = 0;
+
 // проверка, отвечает ли датчик LM75 на шине (1 = есть, 0 = нет)
 uint8_t lm75_is_present(void) {
   return (HAL_I2C_IsDeviceReady(&hi2c3, LM75_TEMP_ADDRESS, I2C_READY_TRIALS,
@@ -283,8 +289,6 @@ int16_t filter_encoder_value(int16_t raw, int16_t* last) {
 int32_t calculate_real_pan_angle(int16_t pan_zero) {
   int16_t cur_pan_angle = as5600_read_stable_pan_angle();
 
-  int32_t real_angle = 0;
-
   if (prev_pan_angle >= 0) {
     int16_t delta = cur_pan_angle - prev_pan_angle;
 
@@ -305,10 +309,8 @@ int32_t calculate_real_pan_angle(int16_t pan_zero) {
   return (int32_t)(pan_zero - pan_accum);
 }
 
-int32_t calculate_real_tilt_angle(int16_t pan_zero) {
+int32_t calculate_real_tilt_angle(int16_t tilt_zero) {
   int16_t cur_tilt_angle = as5600_read_stable_tilt_angle();
-
-  int32_t real_angle = 0;
 
   if (prev_tilt_angle >= 0) {
     int16_t delta = cur_tilt_angle - prev_tilt_angle;
@@ -327,10 +329,57 @@ int32_t calculate_real_tilt_angle(int16_t pan_zero) {
 
   prev_tilt_angle = cur_tilt_angle;
 
-  return (int32_t)(pan_zero - tilt_accum);
+  return (int32_t)(tilt_zero - tilt_accum);
 }
 
 void reset_accum_both() {
   pan_accum = 0;
   tilt_accum = 0;
+  // Сброс предыдущих значений энкодера: иначе следующий вызов
+  // calculate_real_*_angle() посчитает дельту от старого положения и
+  // «въедет» ненулевое смещение в угол (в Qt после калибровки не будет 0,0).
+  prev_pan_angle = ENC_INVALID;
+  prev_tilt_angle = ENC_INVALID;
+  // Скорость тоже — чтобы первый шаг PID не считал разгон за всю калибровку.
+  pan_prev_raw = ENC_INVALID;
+  pan_prev_time = 0;
+  tilt_prev_raw = ENC_INVALID;
+  tilt_prev_time = 0;
+}
+
+static float calculate_speed_from_raw(int16_t (*read_raw)(void),
+                                      int16_t* prev_raw, uint32_t* prev_time) {
+  int16_t cur = read_raw();
+  if (cur < 0) {
+    return 0.0f;  // ошибка чтения — скорость не меняем
+  }
+  uint32_t cur_time = HAL_GetTick();
+
+  float dt = (cur_time - *prev_time) / 1000.0f;
+  if (dt < 0.001f) dt = 0.001f;
+
+  // Дельта в 12-битных отсчётах с учётом обёртки 4095→0.
+  int32_t delta = (int32_t)cur - *prev_raw;
+  if (delta > ENC_HALF_RANGE) delta -= ENC_COUNTS_PER_TURN;
+  if (delta < -ENC_HALF_RANGE) delta += ENC_COUNTS_PER_TURN;
+
+  // Скорость в °/с. Масштаб ДОЛЖЕН совпадать с углом (360/256 на отсчёт,
+  // как в calculate_real_*_angle) — иначе PID видит скорость в 16 раз
+  // меньше реальной (360/4096) и мотор «пролетает» при медленном движении.
+  float speed = (float)delta * 360.0f / 256.0f / dt;
+
+  *prev_raw = cur;
+  *prev_time = cur_time;
+
+  return speed;
+}
+
+float calculate_real_pan_speed(void) {
+  return calculate_speed_from_raw(as5600_read_stable_pan_angle, &pan_prev_raw,
+                                  &pan_prev_time);
+}
+
+float calculate_real_tilt_speed(void) {
+  return calculate_speed_from_raw(as5600_read_stable_tilt_angle, &tilt_prev_raw,
+                                  &tilt_prev_time);
 }

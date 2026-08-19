@@ -43,6 +43,7 @@ Core/Src/sensors.c \
 Core/Src/transport.c \
 Core/Src/turret_init.c \
 Core/Src/turret_tasks.c \
+Core/Src/pid_struct.c \
 Core/Src/stm32f4xx_it.c \
 Core/Src/stm32f4xx_hal_msp.c \
 Core/Src/stm32f4xx_hal_timebase_tim.c \

@@ -126,6 +126,9 @@ void Ros2TaskExecutor(void* argument) {
   // Qt заполняет поля: pan_pos, tilt_pos, pan_vel, tilt_vel
   proto_turret_interfaces__msg__TurretCommand cmd;
 
+  // первичная инициализация PID
+  motor_pid_init();
+
   for (;;) {
     // osMessageQueueGet — забирает сообщение из очереди.
     // Первый параметр — дескриптор очереди — cmdQueueHandle.

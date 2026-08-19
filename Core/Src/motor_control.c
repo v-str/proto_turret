@@ -3,11 +3,26 @@
 #include <math.h>  // fabsf
 
 #include "cmsis_os.h"  // osDelay
+#include "pid_struct.h"
+#include "sensors.h"
 
 volatile uint8_t pan_dir = 0;
 volatile uint8_t tilt_dir = 0;
 volatile uint8_t pan_running = 0;
 volatile uint8_t tilt_running = 0;
+
+static PID_Struct pid_pan;
+static PID_Struct pid_tilt;
+static float target_pan_speed = 0.0f;
+static float target_tilt_speed = 0.0f;
+static uint8_t pid_active_pan = 0;
+static uint8_t pid_active_tilt = 0;
+static uint32_t last_pid_pan_ms = 0;
+static uint32_t last_pid_tilt_ms = 0;
+static float smooth_pan_speed = 0.0f;   // EMA измеренной скорости (норм. −1..1)
+static float smooth_tilt_speed = 0.0f;
+static float cur_pan_output = 0.0f;     // текущая команда (для rate-limit)
+static float cur_tilt_output = 0.0f;
 
 // Обработка прерываний таймеров
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
@@ -107,21 +122,154 @@ void motor_tilt_steps(uint32_t steps, uint8_t dir) {
               steps, dir);
 }
 
+void motor_pid_init() {
+  pid_init(&pid_pan, PID_KP_DEFAULT, PID_KI_DEFAULT, PID_KD_DEFAULT,
+           PID_DT_DEFAULT);
+  pid_init(&pid_tilt, PID_KP_DEFAULT, PID_KI_DEFAULT, PID_KD_DEFAULT,
+           PID_DT_DEFAULT);
+}
+
 bool is_endstop_reached(GPIO_TypeDef* stop_port, uint16_t stop_pin) {
   return HAL_GPIO_ReadPin(stop_port, stop_pin) == GPIO_PIN_RESET;
 }
 
 void motor_move(TurretCommand* cmd) {
-  // Доп. проверка если мы попадем в промежуток от 0 до 100мс, но данных уже
-  // не будет, то просто выйдем
-  if (cmd->pan_vel == 0.0f && cmd->tilt_vel == 0.0f) {
+  // 1. Сохраняем целевую скорость, ограничивая её пределом (нормированная −1..1)
+  target_pan_speed = cmd->pan_vel;
+  if (target_pan_speed > PID_OUTPUT_MAX) target_pan_speed = PID_OUTPUT_MAX;
+  if (target_pan_speed < PID_OUTPUT_MIN) target_pan_speed = PID_OUTPUT_MIN;
+
+  target_tilt_speed = cmd->tilt_vel;
+  if (target_tilt_speed > PID_OUTPUT_MAX) target_tilt_speed = PID_OUTPUT_MAX;
+  if (target_tilt_speed < PID_OUTPUT_MIN) target_tilt_speed = PID_OUTPUT_MIN;
+
+  // 2. Если скорость нулевая — останавливаем мотор и выключаем PID
+  if (fabsf(target_pan_speed) < 0.01f) {
+    pid_active_pan = 0;
+    pid_pan.integral = 0.0f;  // сброс накопленной ошибки
+    pid_pan.prev_error = 0.0f;
+    smooth_pan_speed = 0.0f;  // сброс сглаженной скорости
+    cur_pan_output = 0.0f;    // сброс команды (rate-limit)
     motor_pan_stop();
-    motor_tilt_stop();
-    return;
+  } else {
+    pid_active_pan = 1;
   }
 
-  motor_pan_move(cmd->pan_vel);
-  motor_tilt_move(cmd->tilt_vel);
+  if (fabsf(target_tilt_speed) < 0.01f) {
+    pid_active_tilt = 0;
+    pid_tilt.integral = 0.0f;
+    pid_tilt.prev_error = 0.0f;
+    smooth_tilt_speed = 0.0f;
+    cur_tilt_output = 0.0f;
+    motor_tilt_stop();
+  } else {
+    pid_active_tilt = 1;
+  }
+
+  // 3. Если PID активен — вычисляем и применяем
+  if (pid_active_pan) {
+    uint32_t now = HAL_GetTick();
+    float dt = (float)(now - last_pid_pan_ms) / 1000.0f;
+    last_pid_pan_ms = now;
+    if (dt <= 0.0f) dt = PID_DT_DEFAULT;
+    pid_pan.dt = dt;
+
+    // Измерение в °/с → нормированная (−1..1), с учётом знака направления.
+    float real_speed =
+        calculate_real_pan_speed() / PID_SPEED_MAX_DEG_PER_S * SPEED_SIGN_PAN;
+    // EMA-сглаживание: гасит дрожь от квантования угла (целые градусы).
+    smooth_pan_speed = PID_SPEED_SMOOTH * real_speed +
+                       (1.0f - PID_SPEED_SMOOTH) * smooth_pan_speed;
+    // Feed-forward: команда = уставка + PID-коррекция. Без него при KP=0.5
+    // мотор достигал бы лишь ~33% запрошенной скорости (вялая реакция).
+    // Коррекцию ограничиваем: на малых скоростях квантование энкодера даёт
+    // спайки измеренной скорости (~140°/с на отсчёт), из-за которых коррекция
+    // переворачивала знак выхода и турель резко уходила вверх/вниз.
+    float corr = pid_update(&pid_pan, target_pan_speed, smooth_pan_speed);
+    float corr_max = PID_CORRECTION_MAX_FRACTION * fabsf(target_pan_speed);
+    if (corr > corr_max) corr = corr_max;
+    if (corr < -corr_max) corr = -corr_max;
+    float output = target_pan_speed + corr;
+    if (output > PID_OUTPUT_MAX) output = PID_OUTPUT_MAX;
+    if (output < PID_OUTPUT_MIN) output = PID_OUTPUT_MIN;
+
+    // Rate-limit: плавное изменение команды — убирает рывки при резких
+    // движениях мыши и смене направления.
+    float max_step = PID_OUTPUT_RATE * dt;
+    if (output > cur_pan_output + max_step) output = cur_pan_output + max_step;
+    if (output < cur_pan_output - max_step) output = cur_pan_output - max_step;
+
+    // Концевики: если команда «давит» в уже нажатый концевик — гасим выход
+    // в 0. Иначе PID, не зная про упор, считает измеренную скорость ~0 и
+    // продолжает выдавать ~1.5×target в сторону упора. Мотор упирается,
+    // механика пружинит/люфтит, энкодер читает микро-колебания — выход
+    // переворачивается, и турель начинает сама гулять туда-сюда, ударяясь
+    // в концевики. С гашением в 0 мотор просто останавливается у упора.
+    if (output > 0.0f &&
+        is_endstop_reached(SWITCH_HOR_RIGHT_GPIO_Port,
+                           SWITCH_HOR_RIGHT_Pin)) {
+      output = 0.0f;  // правый концевик — дальше крутить нельзя
+    }
+    if (output < 0.0f &&
+        is_endstop_reached(SWITCH_HOR_LEFT_GPIO_Port, SWITCH_HOR_LEFT_Pin)) {
+      output = 0.0f;  // левый концевик
+    }
+    cur_pan_output = output;
+
+    if (output == 0.0f) {
+      motor_pan_stop();
+    } else {
+      motor_pan_move(output);
+    }
+  }
+
+  if (pid_active_tilt) {
+    uint32_t now = HAL_GetTick();
+    float dt = (float)(now - last_pid_tilt_ms) / 1000.0f;
+    last_pid_tilt_ms = now;
+    if (dt <= 0.0f) dt = PID_DT_DEFAULT;
+    pid_tilt.dt = dt;
+
+    float real_speed =
+        calculate_real_tilt_speed() / PID_SPEED_MAX_DEG_PER_S * SPEED_SIGN_TILT;
+    // EMA-сглаживание: гасит дрожь от квантования угла (целые градусы).
+    smooth_tilt_speed = PID_SPEED_SMOOTH * real_speed +
+                        (1.0f - PID_SPEED_SMOOTH) * smooth_tilt_speed;
+    // Feed-forward: команда = уставка + PID-коррекция.
+    // Коррекцию ограничиваем так же, как для панорамы (квантование энкодера
+    // на малых скоростях иначе переворачивает знак выхода).
+    float corr = pid_update(&pid_tilt, target_tilt_speed, smooth_tilt_speed);
+    float corr_max = PID_CORRECTION_MAX_FRACTION * fabsf(target_tilt_speed);
+    if (corr > corr_max) corr = corr_max;
+    if (corr < -corr_max) corr = -corr_max;
+    float output = target_tilt_speed + corr;
+    if (output > PID_OUTPUT_MAX) output = PID_OUTPUT_MAX;
+    if (output < PID_OUTPUT_MIN) output = PID_OUTPUT_MIN;
+
+    // Rate-limit: плавное изменение команды.
+    float max_step = PID_OUTPUT_RATE * dt;
+    if (output > cur_tilt_output + max_step) output = cur_tilt_output + max_step;
+    if (output < cur_tilt_output - max_step) output = cur_tilt_output - max_step;
+
+    // Концевики тильта: то же, что для панорамы — не давить в упор.
+    if (output > 0.0f &&
+        is_endstop_reached(SWITCH_VERT_REAR_GPIO_Port,
+                           SWITCH_VERT_REAR_Pin)) {
+      output = 0.0f;  // задний концевик (тильт назад/вверх)
+    }
+    if (output < 0.0f &&
+        is_endstop_reached(SWITCH_VERT_FRONT_GPIO_Port,
+                           SWITCH_VERT_FRONT_Pin)) {
+      output = 0.0f;  // передний концевик (тильт вперёд/вниз)
+    }
+    cur_tilt_output = output;
+
+    if (output == 0.0f) {
+      motor_tilt_stop();
+    } else {
+      motor_tilt_move(output);
+    }
+  }
 }
 
 void motor_pan_move(float speed) {
@@ -131,7 +279,8 @@ void motor_pan_move(float speed) {
 
   // Скорость → период таймера
   uint32_t period = (uint32_t)(MOTOR_BASE_PERIOD / fabsf(speed));
-  if (period < 2) period = 2;  // защита от слишком высокой частоты
+  if (period < MOTOR_PERIOD_MIN) period = MOTOR_PERIOD_MIN;  // предел скорости
+  if (period > MOTOR_PERIOD_MAX) period = MOTOR_PERIOD_MAX;  // 16-бит ARR
 
   __HAL_TIM_SET_AUTORELOAD(&htim10, period);
   __HAL_TIM_SET_COUNTER(&htim10, 0);
@@ -148,7 +297,8 @@ void motor_tilt_move(float speed) {
 
   // Скорость → период таймера
   uint32_t period = (uint32_t)(MOTOR_BASE_PERIOD / fabsf(speed));
-  if (period < 2) period = 2;  // защита от слишком высокой частоты
+  if (period < MOTOR_PERIOD_MIN) period = MOTOR_PERIOD_MIN;  // предел скорости
+  if (period > MOTOR_PERIOD_MAX) period = MOTOR_PERIOD_MAX;  // 16-бит ARR
 
   __HAL_TIM_SET_AUTORELOAD(&htim11, period);
   __HAL_TIM_SET_COUNTER(&htim11, 0);
@@ -160,11 +310,13 @@ void motor_tilt_move(float speed) {
 
 void motor_pan_stop() {
   pan_running = 0;
+  cur_pan_output = 0.0f;  // сброс команды — следующий разгон плавный
   HAL_TIM_Base_Stop_IT(&htim10);
 }
 
 void motor_tilt_stop() {
   tilt_running = 0;
+  cur_tilt_output = 0.0f;
   HAL_TIM_Base_Stop_IT(&htim11);
 }
 
