@@ -356,12 +356,10 @@ void transport_publish_encoders(void) {
 void transport_set_pan_zero(void) {
   pan_zero = 0;
   pan_calibrated = 1;
-  reset_accum_both();
 }
 
 // То же для тильта.
 void transport_set_tilt_zero(void) {
   tilt_zero = 0;
   tilt_calibrated = 1;
-  reset_accum_both();
 }

@@ -110,6 +110,7 @@ uint8_t turret_calibrate(void) {
     if (tilt_steps == UINT32_MAX) ok = 0;
   }
 
+  reset_accum_both();
   motor_enable(0);  // отключить драйверы
   return ok;
 }
