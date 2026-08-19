@@ -167,6 +167,11 @@ void Ros2TaskExecutor(void* argument) {
  * @retval no
  */
 void StartDefaultTask(void* argument) {
+  // на всяки случай отключаю все моторы
+  HAL_TIM_Base_Stop_IT(&htim10);
+  HAL_TIM_Base_Stop_IT(&htim11);
+  motor_enable(0);  // отключить драйверы (EN = HIGH)
+
   // Ждём, пока micro-ROS агент станет доступен. Плата в коробе, кнопку Reset
   // не нажать — поэтому перезагружать её не нужно, просто опрашиваем агента
   // до тех пор, пока он не появится.

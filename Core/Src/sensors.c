@@ -8,13 +8,17 @@
 
 #include "sensors.h"
 
-#include "cmsis_os.h"  // osDelay — пауза между ретраями I2C
+#include "cmsis_os.h"   // osDelay — пауза между ретраями I2C
 #include "constants.h"  // адреса LM75/AS5600, коды ошибок, пороги
 
 // Хендлы I2C определяются в main.c (глобальные), объявляем их тут как extern
 extern I2C_HandleTypeDef hi2c1;
 extern I2C_HandleTypeDef hi2c2;
 extern I2C_HandleTypeDef hi2c3;
+
+// переменные для вычисления точного угла после калибровки
+static int32_t pan_accum = 0, tilt_accum = 0;
+static int16_t prev_pan_angle = ENC_INVALID, prev_tilt_angle = ENC_INVALID;
 
 // проверка, отвечает ли датчик LM75 на шине (1 = есть, 0 = нет)
 uint8_t lm75_is_present(void) {
@@ -37,9 +41,10 @@ float lm75_read_temperature(void) {
 
   if (status != HAL_OK) {
     // Диагностика: разные коды = разные причины.
-    if (status == HAL_BUSY) return LM75_TEMP_ABSENT;     // периферия была занята
-    if (status == HAL_TIMEOUT) return LM75_TEMP_TIMEOUT;  // обмен не успел за таймаут
-    return LM75_TEMP_ERROR;  // HAL_ERROR: датчик не ответил (NACK)
+    if (status == HAL_BUSY) return LM75_TEMP_ABSENT;  // периферия была занята
+    if (status == HAL_TIMEOUT)
+      return LM75_TEMP_TIMEOUT;  // обмен не успел за таймаут
+    return LM75_TEMP_ERROR;      // HAL_ERROR: датчик не ответил (NACK)
   }
 
   // объединяем эти 2 байта в одну переменную
@@ -50,7 +55,7 @@ float lm75_read_temperature(void) {
   return (float)(raw >> LM75_TEMP_SHIFT) * LM75_TEMP_LSB;
 }
 
-// Жёсткое восстановление «залипшей» I2C-шины.
+// восстановление «залипшей» I2C-шины.
 //
 // Если сбойная транзакция оставила шину в подвешенном состоянии (например,
 // датчик прижал SDA к земле), аппаратный флаг BUSY не сбрасывается, а на
@@ -140,7 +145,7 @@ int16_t as5600_read_angle_bus(I2C_HandleTypeDef* hi2c) {
   HAL_StatusTypeDef status = HAL_ERROR;
 
   // Ретраи: на движущейся турели бывают помехи на шине, и чтение может
-  // срываться. Пробуем до AS5600_READ_ATTEMPTS раз; между попытками — жёсткое
+  // срываться. Пробуем до AS5600_READ_ATTEMPTS раз; между попытками —
   // восстановление шины (i2c_bus_recover), чтобы канал сам оживал, а не вис до
   // перезапитки.
   for (int attempt = 0; attempt < AS5600_READ_ATTEMPTS; attempt++) {
@@ -159,11 +164,10 @@ int16_t as5600_read_angle_bus(I2C_HandleTypeDef* hi2c) {
 
     if (status == HAL_OK) {
       // объединяем байты в 16 бит, реальные данные — в старших 12 битах
-      return (int16_t)(((buffer[0] << 8) | buffer[1]) >>
-                       AS5600_ANGLE_SHIFT);
+      return (int16_t)(((buffer[0] << 8) | buffer[1]) >> AS5600_ANGLE_SHIFT);
     }
 
-    // неудача — жёстко восстанавливаем шину и пробуем снова
+    // неудача — восстанавливаем шину и пробуем снова
     i2c_bus_recover(hi2c);
     osDelay(I2C_RECOVERY_DELAY_MS);
   }
@@ -172,14 +176,15 @@ int16_t as5600_read_angle_bus(I2C_HandleTypeDef* hi2c) {
   if (status == HAL_ERROR) return AS5600_ERR_HAL_ERROR;
   if (status == HAL_TIMEOUT) return AS5600_ERR_TIMEOUT;
   if (status == HAL_BUSY) return AS5600_ERR_BUSY;
+
   return AS5600_ERR_OTHER;  // другой код
 }
 
 // энкодер M1 (горизонталь) на шине I2C1
-int16_t as5600_read_hor_angle(void) { return as5600_read_angle_bus(&hi2c1); }
+int16_t as5600_read_pan_angle(void) { return as5600_read_angle_bus(&hi2c1); }
 
 // энкодер M2 (вертикаль) на шине I2C2
-int16_t as5600_read_vert_angle(void) { return as5600_read_angle_bus(&hi2c2); }
+int16_t as5600_read_tilt_angle(void) { return as5600_read_angle_bus(&hi2c2); }
 
 /*
 стабильное чтение угла AS5600: читаем AS5600_MEDIAN_READS раз подряд и берём
@@ -233,12 +238,12 @@ int16_t as5600_read_stable_angle_bus(I2C_HandleTypeDef* hi2c) {
 }
 
 // энкодер M1 (горизонталь), стабильное чтение
-int16_t as5600_read_stable_hor_angle(void) {
+int16_t as5600_read_stable_pan_angle(void) {
   return as5600_read_stable_angle_bus(&hi2c1);
 }
 
 // энкодер M2 (вертикаль), стабильное чтение
-int16_t as5600_read_stable_vert_angle(void) {
+int16_t as5600_read_stable_tilt_angle(void) {
   return as5600_read_stable_angle_bus(&hi2c2);
 }
 
@@ -250,9 +255,9 @@ ENC_JUMP_MAX от предыдущего (с учётом обёртки 4095->0
 last — указатель на последнее достоверное значение (инициализировать -1).
 */
 int16_t filter_encoder_value(int16_t raw, int16_t* last) {
-// Предел ENC_JUMP_MAX: при калибровке мотор делает ~250 шаг/с (2 мс/шаг), угол
-// между опросами (ENC_SAMPLE_MS) меняется на десятки счётчиков — помехой
-// считается скачок заметно больше. (ENC_JUMP_MAX — см. constants.h)
+  // Предел ENC_JUMP_MAX: при калибровке мотор делает ~250 шаг/с (2 мс/шаг),
+  // угол между опросами (ENC_SAMPLE_MS) меняется на десятки счётчиков — помехой
+  // считается скачок заметно больше. (ENC_JUMP_MAX — см. constants.h)
 
   if (raw < 0) {
     return *last < 0 ? ENC_INVALID : *last;
@@ -273,4 +278,54 @@ int16_t filter_encoder_value(int16_t raw, int16_t* last) {
     return raw;
   }
   return *last;  // мусор — держим последнее достоверное
+}
+
+int32_t calculate_real_pan_angle(int16_t pan_zero) {
+  int16_t cur_pan_angle = as5600_read_stable_pan_angle();
+
+  int32_t real_angle = 0;
+
+  if (prev_pan_angle >= 0) {
+    int16_t delta = cur_pan_angle - prev_pan_angle;
+
+    if (delta > 127) {
+      delta -= 256;
+    }
+
+    if (delta < -127) {
+      delta += 256;
+    }
+
+    // перевод в градусы
+    pan_accum += (int32_t)((float)delta * 360.0f / 256.0f);
+  }
+
+  prev_pan_angle = cur_pan_angle;
+
+  return (int32_t)(pan_zero - pan_accum);
+}
+
+int32_t calculate_real_tilt_angle(int16_t pan_zero) {
+  int16_t cur_tilt_angle = as5600_read_stable_tilt_angle();
+
+  int32_t real_angle = 0;
+
+  if (prev_tilt_angle >= 0) {
+    int16_t delta = cur_tilt_angle - prev_tilt_angle;
+
+    if (delta > 127) {
+      delta -= 256;
+    }
+
+    if (delta < -127) {
+      delta += 256;
+    }
+
+    // перевод в градусы
+    tilt_accum += (int32_t)((float)delta * 360.0f / 256.0f);
+  }
+
+  prev_tilt_angle = cur_tilt_angle;
+
+  return (int32_t)(pan_zero - tilt_accum);
 }

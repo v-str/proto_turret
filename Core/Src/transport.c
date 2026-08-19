@@ -13,9 +13,9 @@
 
 #include "transport.h"
 
-#include <proto_turret_interfaces/srv/turret_calibrate.h>
 #include <proto_turret_interfaces/msg/turret_command.h>
 #include <proto_turret_interfaces/msg/turret_status.h>
+#include <proto_turret_interfaces/srv/turret_calibrate.h>
 #include <rcl/error_handling.h>
 #include <rcl/rcl.h>
 #include <rclc/executor.h>
@@ -56,7 +56,7 @@ static proto_turret_interfaces__msg__TurretStatus
 static proto_turret_interfaces__msg__TurretCommand
     ros2_cmd_msg;  // входящая команда (сюда кладёт подписчик)
 static std_msgs__msg__Int32MultiArray
-    as5600_raw_msg;  // сырые углы AS5600 [M1, M2]
+    as5600_msg;  // углы после калибровки AS5600 [M1, M2]
 
 // Флаги-«предыдущие состояния» и счётчики для transport_publish_turret_data
 static uint8_t is_lm75_present = 0;  // подключен ли датчик температуры
@@ -67,22 +67,13 @@ static uint32_t last_publish_ms = 0;
 static uint32_t last_temp_read_ms = 0;
 
 // Последние достоверные углы энкодеров (для фильтра скачков в publish_encoders)
-static int16_t last_enc1 = ENC_INVALID, last_enc2 = ENC_INVALID;
+static int16_t last_pan_angle = ENC_INVALID, last_tilt_angle = ENC_INVALID;
 
 // Счётчик сбоев чтения энкодеров с момента старта (публикуется 3-м элементом).
 static uint32_t encoder_read_errors = 0;
 
-// ----------------------------------------------------------------------------
-// Непрерывный угол энкодеров (магнит на валу мотора: внутри хода возможна
-// обёртка 4095->0). prev_enc1/2 — предыдущие ОТФИЛЬТРОВАННЫЕ значения,
-// pan_accum/tilt_accum — накопленный угол в счётчиках (монотонно растёт
-// при вращении в одну сторону независимо от обёртки).
-// ----------------------------------------------------------------------------
-static int16_t prev_enc1 = ENC_INVALID, prev_enc2 = ENC_INVALID;
-static int32_t pan_accum = 0, tilt_accum = 0;
-
 // Ноль (накопленный угол в «средней» позиции) и флаг готовности. Устанавливает
-// калибровка через transport_set_pan_zero/tilt_zero. До калибровки углы = 0.
+// калибровка через transport_set_pan_zero/tilt_zero.
 static int32_t pan_zero = 0, tilt_zero = 0;
 static uint8_t pan_calibrated = 0, tilt_calibrated = 0;
 
@@ -124,41 +115,11 @@ static void cmd_callback(const void* msgin) {
   osMessageQueuePut(cmdQueueHandle, msgin, 0, 0);
 }
 
-// Кратчайшая разница между двумя значениями энкодера с учётом обёртки 0..4095.
-// Например: 4090 -> 5 даёт +11 (переход через ноль), а не -4085.
-static int16_t wrap_delta(int16_t cur, int16_t prev) {
-  int32_t d = (int32_t)cur - (int32_t)prev;
-  if (d > ENC_HALF_RANGE) d -= ENC_COUNTS_PER_TURN;
-  if (d < -ENC_HALF_RANGE) d += ENC_COUNTS_PER_TURN;
-  return (int16_t)d;
-}
-
-// Доверенные пределы дельты между сэмплами энкодера (в счётчиках AS5600):
-//   меньше ENC_DEADBAND — шум шины (не накапливаем, угол не дрожит в покое);
-//   больше ENC_REANCHOR — длинный пропуск/сбой чтения (не доверяем дельте,
-//   просто закрепляемся на новом значении, без ложного скачка ±4096).
-// (ENC_DEADBAND/ENC_REANCHOR — см. constants.h)
-
-// Накопить дельту непрерывного угла с защитой от шума шины.
-// cur — текущее отфильтрованное значение; prev — предыдущее (обновляется).
-// Возвращает приращение к углу (обычно 0). Реальное движение даёт дельты
-// ~512 на сэмпл, поэтому оба порога на него не влияют.
-static int32_t enc_accumulate_delta(int16_t cur, int16_t* prev) {
-  int16_t d = wrap_delta(cur, *prev);
-  *prev = cur;
-  if (d > ENC_REANCHOR || d < -ENC_REANCHOR) {
-    return 0;  // сбой/пропуск — закрепились, не накапливаем
-  }
-  if (d > ENC_DEADBAND || d < -ENC_DEADBAND) {
-    return d;  // реальное движение
-  }
-  return 0;  // шум
-}
-
 // Коллбэк сервиса калибровки. Вызывается executor'ом (поток StartDefaultTask)
 // при приходе запроса. Калибровка идёт синхронно прямо здесь: заполняем
 // response, и rclc-исполнитель сам отправляет ответ клиенту ровно один раз.
-static void calib_service_callback(const void* request_msg, void* response_msg) {
+static void calib_service_callback(const void* request_msg,
+                                   void* response_msg) {
   (void)request_msg;
   proto_turret_interfaces__srv__TurretCalibrate_Response* resp = response_msg;
   resp->success = turret_calibrate();
@@ -235,9 +196,9 @@ bool transport_init(void) {
           PID_TOPIC_AS5600) != RCL_RET_OK) {
     return false;
   }
-  std_msgs__msg__Int32MultiArray__init(&as5600_raw_msg);
+  std_msgs__msg__Int32MultiArray__init(&as5600_msg);
   // AS5600_MSG_ELEMENTS элементов: [M1, M2, счётчик ошибок чтения]
-  rosidl_runtime_c__int32__Sequence__init(&as5600_raw_msg.data,
+  rosidl_runtime_c__int32__Sequence__init(&as5600_msg.data,
                                           AS5600_MSG_ELEMENTS);
 
   // 6. Подписчик на топик PID_TOPIC_CMD — принимает TurretCommand от Qt.
@@ -276,14 +237,15 @@ bool transport_init(void) {
           PID_SERVICE_CALIBRATE) != RCL_RET_OK) {
     return false;
   }
-  if (!proto_turret_interfaces__srv__TurretCalibrate_Request__init(&calib_req) ||
+  if (!proto_turret_interfaces__srv__TurretCalibrate_Request__init(
+          &calib_req) ||
       !proto_turret_interfaces__srv__TurretCalibrate_Response__init(
           &calib_resp)) {
     return false;
   }
   if (rclc_executor_add_service(&ros2_executor, &calib_service, &calib_req,
-                                &calib_resp, &calib_service_callback) !=
-      RCL_RET_OK) {
+                                &calib_resp,
+                                &calib_service_callback) != RCL_RET_OK) {
     return false;
   }
 
@@ -355,21 +317,14 @@ void transport_publish_turret_data(void) {
 
 // Публикация углов энкодеров AS5600 в топик PID_TOPIC_AS5600:
 //   data[0] — M1 (горизонталь), data[1] — M2 (вертикаль),
-//   data[2] — счётчик сбоев чтения с момента старта.
-// Моторные помехи дают редкие мусорные чтения — отфильтровываем скачки
-// (filter_encoder_value) и публикуем последнее достоверное значение.
-// Счётчик data[2] показывает, что реально происходило с шиной, не маскируясь
-// фильтром.
-//
-// После калибровки data[0]/data[1] — углы в градусах (0 = середина хода),
-// как в топике статуса. До калибровки — сырые счётчики AS5600 (0..4095),
-// удобные для отладки шины.
-//
-// Вызывается каждые 10 мс из StartDefaultTask, но опрашиваем энкодеры не чаще
-// раз в 100 мс (10 Гц) — так накопление угла с учётом обёртки остаётся
-// точным при быстром вращении. Данные в топик AS5600 и углы статуса
-// публикуются раз в 250 мс (4 Гц).
+//   data[2] — счётчик сбоев чтения с момента старта
 void transport_publish_encoders(void) {
+  // если калибровка еще не выполнена, то выходим, данные публикуем только
+  // после калибровки
+  if (!pan_calibrated || !tilt_calibrated) {
+    return;
+  }
+
   uint32_t now = HAL_GetTick();
 
   // Опрос не чаще раза в ENC_SAMPLE_MS
@@ -378,61 +333,14 @@ void transport_publish_encoders(void) {
   }
   last_enc_publish_ms = now;
 
-  int16_t e1 = as5600_read_stable_hor_angle();
-  int16_t e2 = as5600_read_stable_vert_angle();
+  // Записываем углы с учетом калибровки
+  as5600_msg.data.data[0] = calculate_real_pan_angle(pan_zero);
+  as5600_msg.data.data[1] = calculate_real_tilt_angle(tilt_zero);
 
-  // Считаем сбои чтения (коды ошибок < 0) — видно в data[2].
-  if (e1 < 0) encoder_read_errors++;
-  if (e2 < 0) encoder_read_errors++;
-
-  e1 = filter_encoder_value(e1, &last_enc1);
-  e2 = filter_encoder_value(e2, &last_enc2);
-
-  // Непрерывный угол: накапливаем кратчайшую дельту между отфильтрованными
-  // значениями (обёртка 4095->0 не ломает счёт). Медиана чтения + мёртвая
-  // зона + re-anchor делают накопление устойчивым к шуму шины и пропускам.
-  if (prev_enc1 < 0) {
-    prev_enc1 = e1;
-  } else {
-    pan_accum += enc_accumulate_delta(e1, &prev_enc1);
-  }
-  if (prev_enc2 < 0) {
-    prev_enc2 = e2;
-  } else {
-    tilt_accum += enc_accumulate_delta(e2, &prev_enc2);
-  }
-
-  // После калибровки публикуем углы в градусах (0 = середина хода), как в
-  // статусе; до калибровки — сырые счётчики AS5600 (0..4095) для отладки.
-  as5600_raw_msg.data.data[0] =
-      pan_calibrated
-          ? (int32_t)((pan_accum - pan_zero) * DEG_PER_TURN /
-                      (float)ENC_COUNTS_PER_TURN)
-          : e1;
-  as5600_raw_msg.data.data[1] =
-      tilt_calibrated
-          ? (int32_t)((tilt_accum - tilt_zero) * DEG_PER_TURN /
-                      (float)ENC_COUNTS_PER_TURN)
-          : e2;
-  as5600_raw_msg.data.data[2] = (int32_t)encoder_read_errors;
-
-  // Углы для статуса: (накопленный угол - ноль) в целых градусах. Слева от
-  // нуля — отрицательные, справа — положительные. До калибровки — 0.
-  ros2_turret_status.pan_angle =
-      pan_calibrated
-          ? (int32_t)((pan_accum - pan_zero) * DEG_PER_TURN /
-                      (float)ENC_COUNTS_PER_TURN)
-          : 0;
-  ros2_turret_status.tilt_angle =
-      tilt_calibrated
-          ? (int32_t)((tilt_accum - tilt_zero) * DEG_PER_TURN /
-                      (float)ENC_COUNTS_PER_TURN)
-          : 0;
-
-  // Данные AS5600 публикуем раз в AS5600_PUBLISH_MS (4 Гц).
+  // Данные AS5600 публикуем раз в AS5600_PUBLISH_MS (10 Гц).
   if ((uint32_t)(now - last_as5600_pub_ms) >= AS5600_PUBLISH_MS) {
     last_as5600_pub_ms = now;
-    rcl_publish(&ros2_as5600_publisher, &as5600_raw_msg, NULL);
+    rcl_publish(&ros2_as5600_publisher, &as5600_msg, NULL);
   }
 }
 
@@ -443,12 +351,12 @@ void transport_publish_encoders(void) {
 // Запомнить текущий накопленный угол панорамы как 0° (вызывается после того,
 // как турель доехала до середины диапазона).
 void transport_set_pan_zero(void) {
-  pan_zero = pan_accum;
+  pan_zero = 0;
   pan_calibrated = 1;
 }
 
 // То же для тильта.
 void transport_set_tilt_zero(void) {
-  tilt_zero = tilt_accum;
+  tilt_zero = 0;
   tilt_calibrated = 1;
 }

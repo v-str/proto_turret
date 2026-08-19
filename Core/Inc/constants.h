@@ -27,7 +27,7 @@
 #define ENC_HALF_RANGE \
   (ENC_COUNTS_PER_TURN / 2)     // пол-оборота (граница обёртки)
 #define ENC_INVALID (-1)        // «энкодер ещё не читался»
-#define ENC_SAMPLE_MS 100       // опрос энкодеров (10 Гц)
+#define ENC_SAMPLE_MS 50        // опрос энкодеров (20 Гц)
 #define ENC_DEADBAND 4          // шум шины: дельту меньше не накапливаем
 #define ENC_REANCHOR 1024       // сбой/пропуск: дельту больше не доверяем
 #define ENC_JUMP_MAX 1000       // скачок-фильтр: больше = мусор
@@ -66,7 +66,7 @@
 #define I2C_MEM_TIMEOUT_MS 50     // таймаут чтения регистра датчика, мс
 #define I2C_RECOVERY_CLOCKS 9     // тактов SCL при bus-recovery
 #define I2C_RECOVERY_DELAY_MS 1   // пауза между тактами SCL, мс
-// Пины SCL/SDA каждой шины (для жёсткого bus-recovery в sensors.c)
+// Пины SCL/SDA каждой шины (для bus-recovery в sensors.c)
 #define I2C1_SCL_PORT GPIOB
 #define I2C1_SCL_PIN GPIO_PIN_6
 #define I2C1_SDA_PORT GPIOB
@@ -84,7 +84,7 @@
 // Периоды публикации и пересчёты
 // ----------------------------------------------------------------------------
 #define STATUS_HEARTBEAT_MS 250  // heartbeat статуса (4 Гц)
-#define AS5600_PUBLISH_MS 250    // публикация AS5600 (4 Гц)
+#define AS5600_PUBLISH_MS 100    // публикация AS5600 (10 Гц)
 #define TEMP_READ_MS 1000        // перечитывать LM75 раз в 1 с
 #define DEG_PER_TURN 360.0f      // градусов на полный оборот
 
@@ -104,8 +104,8 @@
 // ----------------------------------------------------------------------------
 #define CALIB_STEP_DELAY_MS \
   2  // задержка между полушагами, мс (2 мс = 250 шаг/с)
-#define CALIB_MAX_STEPS 30000  // таймаут концевика: число шагов (0 = отказ)
-#define CALIB_PAUSE_MS 1000    // пауза между проходами оси, мс
+#define CALIB_MAX_STEPS 15000  // таймаут концевика: число шагов (0 = отказ)
+#define CALIB_PAUSE_MS 300     // пауза между проходами оси, мс
 #define PAN_DIR_LEFT GPIO_PIN_RESET    // движение панорамы влево
 #define PAN_DIR_RIGHT GPIO_PIN_SET     // движение панорамы вправо
 #define TILT_DIR_FRONT GPIO_PIN_RESET  // движение тильта вперёд (вниз)
