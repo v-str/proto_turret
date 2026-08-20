@@ -1,7 +1,6 @@
 #include "motor_control.h"
 
 #include <math.h>  // fabsf
-#include <string.h>  // strcmp (motor_set_pid_param)
 
 #include "cmsis_os.h"  // osDelay
 #include "pid_struct.h"
@@ -27,7 +26,7 @@ static float cur_tilt_output = 0.0f;
 
 // --- Runtime PID-настройки (раздельные для каждой оси) ---
 // Инициализируются из констант в motor_pid_init(); меняются в рантайме через
-// motor_set_pid_param() (для ROS2-сервиса параметров).
+// motor_apply_pid_params() (для ROS2-сервиса параметров).
 static float pan_kp = PAN_PID_KP_DEFAULT;
 static float pan_ki = PAN_PID_KI_DEFAULT;
 static float pan_kd = PAN_PID_KD_DEFAULT;
@@ -147,52 +146,52 @@ void motor_pid_init() {
   pid_init(&pid_tilt, tilt_kp, tilt_ki, tilt_kd, PID_DT_DEFAULT);
 
   // Runtime-настройки — из констант (при повторном вызове сбрасываются)
-  pan_kp = PAN_PID_KP_DEFAULT;
-  pan_ki = PAN_PID_KI_DEFAULT;
-  pan_kd = PAN_PID_KD_DEFAULT;
-  pan_smooth = PAN_PID_SPEED_SMOOTH;
-  pan_rate = PAN_PID_OUTPUT_RATE;
-  pan_corr_max = PAN_PID_CORRECTION_MAX_FRACTION;
-  pan_speed_max = PAN_PID_SPEED_MAX_DEG_PER_S;
-
-  tilt_kp = TILT_PID_KP_DEFAULT;
-  tilt_ki = TILT_PID_KI_DEFAULT;
-  tilt_kd = TILT_PID_KD_DEFAULT;
-  tilt_smooth = TILT_PID_SPEED_SMOOTH;
-  tilt_rate = TILT_PID_OUTPUT_RATE;
-  tilt_corr_max = TILT_PID_CORRECTION_MAX_FRACTION;
-  tilt_speed_max = TILT_PID_SPEED_MAX_DEG_PER_S;
+  MotorPidParams d = {
+      .pan_kp = PAN_PID_KP_DEFAULT,
+      .pan_ki = PAN_PID_KI_DEFAULT,
+      .pan_kd = PAN_PID_KD_DEFAULT,
+      .pan_smooth = PAN_PID_SPEED_SMOOTH,
+      .pan_rate = PAN_PID_OUTPUT_RATE,
+      .pan_corr_max = PAN_PID_CORRECTION_MAX_FRACTION,
+      .pan_speed_max = PAN_PID_SPEED_MAX_DEG_PER_S,
+      .tilt_kp = TILT_PID_KP_DEFAULT,
+      .tilt_ki = TILT_PID_KI_DEFAULT,
+      .tilt_kd = TILT_PID_KD_DEFAULT,
+      .tilt_smooth = TILT_PID_SPEED_SMOOTH,
+      .tilt_rate = TILT_PID_OUTPUT_RATE,
+      .tilt_corr_max = TILT_PID_CORRECTION_MAX_FRACTION,
+      .tilt_speed_max = TILT_PID_SPEED_MAX_DEG_PER_S,
+  };
+  motor_apply_pid_params(&d);
 }
 
-// Применить runtime-настройку PID по имени оси. Имена "pan_*"/"tilt_*":
-//   kp/ki/kd         — коэффициенты (в структуру PID),
-//   smooth            — EMA-сглаживание измеренной скорости,
-//   rate              — ограничение разгона/торможения выхода,
-//   corr_max          — макс. коррекция в долях |target|,
-//   speed_max         — макс. скорость °/с при команде 1.0 (нормировка).
+// Применить полный набор PID-настроек. kp/ki/kd пишутся в структуры PID
+// (используются в motor_move), остальное — в runtime-переменные.
 // Вызывается из ROS2-сервиса параметров (поток StartDefaultTask), в то время
 // как motor_move() крутится в Ros2TaskExecutor — одиночные float-записи 32-бит
 // атомарны на Cortex-M4, блокировки не нужны.
-uint8_t motor_set_pid_param(const char* name, double value) {
-  float v = (float)value;
+void motor_apply_pid_params(const MotorPidParams* p) {
+  pan_kp = p->pan_kp;
+  pan_ki = p->pan_ki;
+  pan_kd = p->pan_kd;
+  pan_smooth = p->pan_smooth;
+  pan_rate = p->pan_rate;
+  pan_corr_max = p->pan_corr_max;
+  pan_speed_max = p->pan_speed_max;
+  pid_pan.kp = p->pan_kp;
+  pid_pan.ki = p->pan_ki;
+  pid_pan.kd = p->pan_kd;
 
-  if (strcmp(name, "pan_kp") == 0) { pan_kp = v; pid_pan.kp = v; return 1; }
-  if (strcmp(name, "pan_ki") == 0) { pan_ki = v; pid_pan.ki = v; return 1; }
-  if (strcmp(name, "pan_kd") == 0) { pan_kd = v; pid_pan.kd = v; return 1; }
-  if (strcmp(name, "pan_smooth") == 0) { pan_smooth = v; return 1; }
-  if (strcmp(name, "pan_rate") == 0) { pan_rate = v; return 1; }
-  if (strcmp(name, "pan_corr_max") == 0) { pan_corr_max = v; return 1; }
-  if (strcmp(name, "pan_speed_max") == 0) { pan_speed_max = v; return 1; }
-
-  if (strcmp(name, "tilt_kp") == 0) { tilt_kp = v; pid_tilt.kp = v; return 1; }
-  if (strcmp(name, "tilt_ki") == 0) { tilt_ki = v; pid_tilt.ki = v; return 1; }
-  if (strcmp(name, "tilt_kd") == 0) { tilt_kd = v; pid_tilt.kd = v; return 1; }
-  if (strcmp(name, "tilt_smooth") == 0) { tilt_smooth = v; return 1; }
-  if (strcmp(name, "tilt_rate") == 0) { tilt_rate = v; return 1; }
-  if (strcmp(name, "tilt_corr_max") == 0) { tilt_corr_max = v; return 1; }
-  if (strcmp(name, "tilt_speed_max") == 0) { tilt_speed_max = v; return 1; }
-
-  return 0;
+  tilt_kp = p->tilt_kp;
+  tilt_ki = p->tilt_ki;
+  tilt_kd = p->tilt_kd;
+  tilt_smooth = p->tilt_smooth;
+  tilt_rate = p->tilt_rate;
+  tilt_corr_max = p->tilt_corr_max;
+  tilt_speed_max = p->tilt_speed_max;
+  pid_tilt.kp = p->tilt_kp;
+  pid_tilt.ki = p->tilt_ki;
+  pid_tilt.kd = p->tilt_kd;
 }
 
 bool is_endstop_reached(GPIO_TypeDef* stop_port, uint16_t stop_pin) {

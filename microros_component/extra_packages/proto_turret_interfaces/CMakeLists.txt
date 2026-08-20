@@ -8,6 +8,7 @@ set(interfaces
   "msg/TurretCommand.msg"
   "msg/TurretStatus.msg"
   "srv/TurretCalibrate.srv"
+  "srv/PidParams.srv"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}

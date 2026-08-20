@@ -16,6 +16,7 @@
 #include <proto_turret_interfaces/msg/turret_command.h>
 #include <proto_turret_interfaces/msg/turret_status.h>
 #include <proto_turret_interfaces/srv/turret_calibrate.h>
+#include <proto_turret_interfaces/srv/pid_params.h>
 #include <rcl/error_handling.h>
 #include <rcl/rcl.h>
 #include <rclc/executor.h>
@@ -30,6 +31,7 @@
 #include "cmsis_os.h"  // osMessageQueuePut — положить команду в очередь
 #include "constants.h"
 #include "main.h"          // HAL, пины, huart2
+#include "motor_control.h"  // MotorPidParams, motor_apply_pid_params
 #include "sensors.h"       // LM75, AS5600, фильтр энкодеров
 #include "turret_tasks.h"  // cmdQueueHandle — очередь команд (создаёт TasksInit)
 
@@ -82,6 +84,11 @@ static rcl_service_t calib_service;
 static proto_turret_interfaces__srv__TurretCalibrate_Request calib_req;
 static proto_turret_interfaces__srv__TurretCalibrate_Response calib_resp;
 
+// --- Состояние сервиса PID-параметров ---
+static rcl_service_t pid_params_service;
+static proto_turret_interfaces__srv__PidParams_Request pid_params_req;
+static proto_turret_interfaces__srv__PidParams_Response pid_params_resp;
+
 // Throttle опроса энкодеров: читаем не чаще раза в 100 мс (10 Гц) — так
 // накопление угла с учётом обёртки остаётся точным. Публикуем раз в 250 мс
 // (4 Гц).
@@ -123,6 +130,32 @@ static void calib_service_callback(const void* request_msg,
   (void)request_msg;
   proto_turret_interfaces__srv__TurretCalibrate_Response* resp = response_msg;
   resp->success = turret_calibrate();
+}
+
+// Коллбэк сервиса PID-параметров: применяет полный снимок настроек (все 14
+// полей PidParams.srv) к работающему PID через motor_apply_pid_params.
+// Все поля обязательны и валидны — success всегда true.
+static void pid_params_callback(const void* request_msg, void* response_msg) {
+  const proto_turret_interfaces__srv__PidParams_Request* req = request_msg;
+  proto_turret_interfaces__srv__PidParams_Response* resp = response_msg;
+  MotorPidParams p = {
+      .pan_kp = (float)req->pan_kp,
+      .pan_ki = (float)req->pan_ki,
+      .pan_kd = (float)req->pan_kd,
+      .pan_smooth = (float)req->pan_smooth,
+      .pan_rate = (float)req->pan_rate,
+      .pan_corr_max = (float)req->pan_corr_max,
+      .pan_speed_max = (float)req->pan_speed_max,
+      .tilt_kp = (float)req->tilt_kp,
+      .tilt_ki = (float)req->tilt_ki,
+      .tilt_kd = (float)req->tilt_kd,
+      .tilt_smooth = (float)req->tilt_smooth,
+      .tilt_rate = (float)req->tilt_rate,
+      .tilt_corr_max = (float)req->tilt_corr_max,
+      .tilt_speed_max = (float)req->tilt_speed_max,
+  };
+  motor_apply_pid_params(&p);
+  resp->success = true;
 }
 
 // Настройка кастомного транспорта micro-ROS: USART2 + DMA.
@@ -246,6 +279,27 @@ bool transport_init(void) {
   if (rclc_executor_add_service(&ros2_executor, &calib_service, &calib_req,
                                 &calib_resp,
                                 &calib_service_callback) != RCL_RET_OK) {
+    return false;
+  }
+
+  // 10. Сервис PID-параметров (turret_pid_params). Принимает полный снимок
+  //   настроек (PidParams.srv, все 14 полей), применяет через
+  //   motor_apply_pid_params (см. pid_params_callback). Работает синхронно в
+  //   коллбэке — запись float атомарна, блокировки не нужны.
+  if (rclc_service_init_default(
+          &pid_params_service, &ros2_node,
+          ROSIDL_GET_SRV_TYPE_SUPPORT(proto_turret_interfaces, srv, PidParams),
+          PID_SERVICE_PID_PARAMS) != RCL_RET_OK) {
+    return false;
+  }
+  if (!proto_turret_interfaces__srv__PidParams_Request__init(&pid_params_req) ||
+      !proto_turret_interfaces__srv__PidParams_Response__init(
+          &pid_params_resp)) {
+    return false;
+  }
+  if (rclc_executor_add_service(&ros2_executor, &pid_params_service,
+                                &pid_params_req, &pid_params_resp,
+                                &pid_params_callback) != RCL_RET_OK) {
     return false;
   }
 

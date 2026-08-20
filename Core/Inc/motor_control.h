@@ -17,6 +17,15 @@ extern volatile uint8_t tilt_running;
 
 typedef proto_turret_interfaces__msg__TurretCommand TurretCommand;
 
+// Полный набор PID-настроек турели (pan — горизонталь, tilt — вертикаль).
+// Поля совпадают по именам с PidParams.srv — применяется одним вызовом.
+typedef struct {
+  float pan_kp, pan_ki, pan_kd, pan_smooth, pan_rate, pan_corr_max,
+      pan_speed_max;
+  float tilt_kp, tilt_ki, tilt_kd, tilt_smooth, tilt_rate, tilt_corr_max,
+      tilt_speed_max;
+} MotorPidParams;
+
 // -- Фукнции для управление турелью в ручном режиме
 bool is_endstop_reached(GPIO_TypeDef* stop_port, uint16_t stop_pin);
 // Движение моторов от указателя мыши
@@ -49,11 +58,9 @@ void motor_tilt_steps(uint32_t steps, uint8_t dir);
 // PID
 void motor_pid_init();
 
-// Задать PID-коэффициент/настройку оси по имени в рантайме (для сервиса
-// параметров ROS2). Имена: "pan_kp", "pan_ki", "pan_kd", "pan_smooth",
-// "pan_rate", "pan_corr_max", "pan_speed_max" и зеркально "tilt_*".
-// value — новое значение (kp/ki/kd применяются к структуре PID, остальное —
-// к соответствующим runtime-переменным). Возвращает 1, если имя распознано.
-uint8_t motor_set_pid_param(const char* name, double value);
+// Применить полный набор PID-настроек (для сервиса PID-параметров ROS2).
+// kp/ki/kd применяются к структурам PID, остальное — к соответствующим
+// runtime-переменным. Валиден всегда — все 14 полей обязательны.
+void motor_apply_pid_params(const MotorPidParams* p);
 
 #endif  // MOTOR_CONTROL_H

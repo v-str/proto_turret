@@ -20,7 +20,8 @@ void transport_setup(void);
 bool transport_ping_agent(void);
 
 // Полная инициализация micro-ROS: транспорт, аллокатор, нода, издатели,
-// подписчик, executor. true = успех. Вызывается после того, как агент доступен.
+// подписчик, executor, сервисы калибровки и PID-параметров.
+// true = успех. Вызывается после того, как агент доступен.
 bool transport_init(void);
 
 // Проверка входящих сообщений (spin_some): если пришла команда от Qt —
@@ -35,10 +36,12 @@ void transport_publish_turret_data(void);
 // Мусорные скачки от моторных помех отфильтровываются.
 void transport_publish_encoders(void);
 
-// --- Калибровка (сервис turret_calibrate) ---
-// Сервис обрабатывается синхронно в коллбэке (rclc-исполнитель сам шлёт
-// ответ). turret_calibrate() из turret_tasks.c выполняет калибровку и
+// --- Сервисы ---
+// turret_calibrate обрабатывается синхронно в коллбэке (rclc-исполнитель сам
+// шлёт ответ). turret_calibrate() из turret_tasks.c выполняет калибровку и
 // заполняет результат.
+// turret_pid_params (PidParams.srv) применяет полный снимок PID-настроек
+// через motor_apply_pid_params() (motor_control.h).
 
 // Запомнить текущий накопленный угол панорамы/тильта как 0° (после того, как
 // турель доехала до середины диапазона).

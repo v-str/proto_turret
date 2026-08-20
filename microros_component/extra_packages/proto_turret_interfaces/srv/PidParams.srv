@@ -1,0 +1,18 @@
+# Полный снимок PID-настроек турели: применяются все 14 параметров за раз.
+# Поля pan_* — горизонталь, tilt_* — вертикаль.
+float64 pan_kp
+float64 pan_ki
+float64 pan_kd
+float64 pan_smooth
+float64 pan_rate
+float64 pan_corr_max
+float64 pan_speed_max
+float64 tilt_kp
+float64 tilt_ki
+float64 tilt_kd
+float64 tilt_smooth
+float64 tilt_rate
+float64 tilt_corr_max
+float64 tilt_speed_max
+---
+bool success
