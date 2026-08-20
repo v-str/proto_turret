@@ -1,6 +1,7 @@
 #include "motor_control.h"
 
 #include <math.h>  // fabsf
+#include <string.h>  // strcmp (motor_set_pid_param)
 
 #include "cmsis_os.h"  // osDelay
 #include "pid_struct.h"
@@ -23,6 +24,25 @@ static float smooth_pan_speed = 0.0f;   // EMA измеренной скорос
 static float smooth_tilt_speed = 0.0f;
 static float cur_pan_output = 0.0f;     // текущая команда (для rate-limit)
 static float cur_tilt_output = 0.0f;
+
+// --- Runtime PID-настройки (раздельные для каждой оси) ---
+// Инициализируются из констант в motor_pid_init(); меняются в рантайме через
+// motor_set_pid_param() (для ROS2-сервиса параметров).
+static float pan_kp = PAN_PID_KP_DEFAULT;
+static float pan_ki = PAN_PID_KI_DEFAULT;
+static float pan_kd = PAN_PID_KD_DEFAULT;
+static float pan_smooth = PAN_PID_SPEED_SMOOTH;
+static float pan_rate = PAN_PID_OUTPUT_RATE;
+static float pan_corr_max = PAN_PID_CORRECTION_MAX_FRACTION;
+static float pan_speed_max = PAN_PID_SPEED_MAX_DEG_PER_S;
+
+static float tilt_kp = TILT_PID_KP_DEFAULT;
+static float tilt_ki = TILT_PID_KI_DEFAULT;
+static float tilt_kd = TILT_PID_KD_DEFAULT;
+static float tilt_smooth = TILT_PID_SPEED_SMOOTH;
+static float tilt_rate = TILT_PID_OUTPUT_RATE;
+static float tilt_corr_max = TILT_PID_CORRECTION_MAX_FRACTION;
+static float tilt_speed_max = TILT_PID_SPEED_MAX_DEG_PER_S;
 
 // Обработка прерываний таймеров
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
@@ -123,10 +143,56 @@ void motor_tilt_steps(uint32_t steps, uint8_t dir) {
 }
 
 void motor_pid_init() {
-  pid_init(&pid_pan, PID_KP_DEFAULT, PID_KI_DEFAULT, PID_KD_DEFAULT,
-           PID_DT_DEFAULT);
-  pid_init(&pid_tilt, PID_KP_DEFAULT, PID_KI_DEFAULT, PID_KD_DEFAULT,
-           PID_DT_DEFAULT);
+  pid_init(&pid_pan, pan_kp, pan_ki, pan_kd, PID_DT_DEFAULT);
+  pid_init(&pid_tilt, tilt_kp, tilt_ki, tilt_kd, PID_DT_DEFAULT);
+
+  // Runtime-настройки — из констант (при повторном вызове сбрасываются)
+  pan_kp = PAN_PID_KP_DEFAULT;
+  pan_ki = PAN_PID_KI_DEFAULT;
+  pan_kd = PAN_PID_KD_DEFAULT;
+  pan_smooth = PAN_PID_SPEED_SMOOTH;
+  pan_rate = PAN_PID_OUTPUT_RATE;
+  pan_corr_max = PAN_PID_CORRECTION_MAX_FRACTION;
+  pan_speed_max = PAN_PID_SPEED_MAX_DEG_PER_S;
+
+  tilt_kp = TILT_PID_KP_DEFAULT;
+  tilt_ki = TILT_PID_KI_DEFAULT;
+  tilt_kd = TILT_PID_KD_DEFAULT;
+  tilt_smooth = TILT_PID_SPEED_SMOOTH;
+  tilt_rate = TILT_PID_OUTPUT_RATE;
+  tilt_corr_max = TILT_PID_CORRECTION_MAX_FRACTION;
+  tilt_speed_max = TILT_PID_SPEED_MAX_DEG_PER_S;
+}
+
+// Применить runtime-настройку PID по имени оси. Имена "pan_*"/"tilt_*":
+//   kp/ki/kd         — коэффициенты (в структуру PID),
+//   smooth            — EMA-сглаживание измеренной скорости,
+//   rate              — ограничение разгона/торможения выхода,
+//   corr_max          — макс. коррекция в долях |target|,
+//   speed_max         — макс. скорость °/с при команде 1.0 (нормировка).
+// Вызывается из ROS2-сервиса параметров (поток StartDefaultTask), в то время
+// как motor_move() крутится в Ros2TaskExecutor — одиночные float-записи 32-бит
+// атомарны на Cortex-M4, блокировки не нужны.
+uint8_t motor_set_pid_param(const char* name, double value) {
+  float v = (float)value;
+
+  if (strcmp(name, "pan_kp") == 0) { pan_kp = v; pid_pan.kp = v; return 1; }
+  if (strcmp(name, "pan_ki") == 0) { pan_ki = v; pid_pan.ki = v; return 1; }
+  if (strcmp(name, "pan_kd") == 0) { pan_kd = v; pid_pan.kd = v; return 1; }
+  if (strcmp(name, "pan_smooth") == 0) { pan_smooth = v; return 1; }
+  if (strcmp(name, "pan_rate") == 0) { pan_rate = v; return 1; }
+  if (strcmp(name, "pan_corr_max") == 0) { pan_corr_max = v; return 1; }
+  if (strcmp(name, "pan_speed_max") == 0) { pan_speed_max = v; return 1; }
+
+  if (strcmp(name, "tilt_kp") == 0) { tilt_kp = v; pid_tilt.kp = v; return 1; }
+  if (strcmp(name, "tilt_ki") == 0) { tilt_ki = v; pid_tilt.ki = v; return 1; }
+  if (strcmp(name, "tilt_kd") == 0) { tilt_kd = v; pid_tilt.kd = v; return 1; }
+  if (strcmp(name, "tilt_smooth") == 0) { tilt_smooth = v; return 1; }
+  if (strcmp(name, "tilt_rate") == 0) { tilt_rate = v; return 1; }
+  if (strcmp(name, "tilt_corr_max") == 0) { tilt_corr_max = v; return 1; }
+  if (strcmp(name, "tilt_speed_max") == 0) { tilt_speed_max = v; return 1; }
+
+  return 0;
 }
 
 bool is_endstop_reached(GPIO_TypeDef* stop_port, uint16_t stop_pin) {
@@ -176,17 +242,17 @@ void motor_move(TurretCommand* cmd) {
 
     // Измерение в °/с → нормированная (−1..1), с учётом знака направления.
     float real_speed =
-        calculate_real_pan_speed() / PID_SPEED_MAX_DEG_PER_S * SPEED_SIGN_PAN;
+        calculate_real_pan_speed() / pan_speed_max * SPEED_SIGN_PAN;
     // EMA-сглаживание: гасит дрожь от квантования угла (целые градусы).
-    smooth_pan_speed = PID_SPEED_SMOOTH * real_speed +
-                       (1.0f - PID_SPEED_SMOOTH) * smooth_pan_speed;
+    smooth_pan_speed = pan_smooth * real_speed +
+                       (1.0f - pan_smooth) * smooth_pan_speed;
     // Feed-forward: команда = уставка + PID-коррекция. Без него при KP=0.5
     // мотор достигал бы лишь ~33% запрошенной скорости (вялая реакция).
     // Коррекцию ограничиваем: на малых скоростях квантование энкодера даёт
     // спайки измеренной скорости (~140°/с на отсчёт), из-за которых коррекция
     // переворачивала знак выхода и турель резко уходила вверх/вниз.
     float corr = pid_update(&pid_pan, target_pan_speed, smooth_pan_speed);
-    float corr_max = PID_CORRECTION_MAX_FRACTION * fabsf(target_pan_speed);
+    float corr_max = pan_corr_max * fabsf(target_pan_speed);
     if (corr > corr_max) corr = corr_max;
     if (corr < -corr_max) corr = -corr_max;
     float output = target_pan_speed + corr;
@@ -195,7 +261,7 @@ void motor_move(TurretCommand* cmd) {
 
     // Rate-limit: плавное изменение команды — убирает рывки при резких
     // движениях мыши и смене направления.
-    float max_step = PID_OUTPUT_RATE * dt;
+    float max_step = pan_rate * dt;
     if (output > cur_pan_output + max_step) output = cur_pan_output + max_step;
     if (output < cur_pan_output - max_step) output = cur_pan_output - max_step;
 
@@ -231,15 +297,15 @@ void motor_move(TurretCommand* cmd) {
     pid_tilt.dt = dt;
 
     float real_speed =
-        calculate_real_tilt_speed() / PID_SPEED_MAX_DEG_PER_S * SPEED_SIGN_TILT;
+        calculate_real_tilt_speed() / tilt_speed_max * SPEED_SIGN_TILT;
     // EMA-сглаживание: гасит дрожь от квантования угла (целые градусы).
-    smooth_tilt_speed = PID_SPEED_SMOOTH * real_speed +
-                        (1.0f - PID_SPEED_SMOOTH) * smooth_tilt_speed;
+    smooth_tilt_speed = tilt_smooth * real_speed +
+                        (1.0f - tilt_smooth) * smooth_tilt_speed;
     // Feed-forward: команда = уставка + PID-коррекция.
     // Коррекцию ограничиваем так же, как для панорамы (квантование энкодера
     // на малых скоростях иначе переворачивает знак выхода).
     float corr = pid_update(&pid_tilt, target_tilt_speed, smooth_tilt_speed);
-    float corr_max = PID_CORRECTION_MAX_FRACTION * fabsf(target_tilt_speed);
+    float corr_max = tilt_corr_max * fabsf(target_tilt_speed);
     if (corr > corr_max) corr = corr_max;
     if (corr < -corr_max) corr = -corr_max;
     float output = target_tilt_speed + corr;
@@ -247,7 +313,7 @@ void motor_move(TurretCommand* cmd) {
     if (output < PID_OUTPUT_MIN) output = PID_OUTPUT_MIN;
 
     // Rate-limit: плавное изменение команды.
-    float max_step = PID_OUTPUT_RATE * dt;
+    float max_step = tilt_rate * dt;
     if (output > cur_tilt_output + max_step) output = cur_tilt_output + max_step;
     if (output < cur_tilt_output - max_step) output = cur_tilt_output - max_step;
 

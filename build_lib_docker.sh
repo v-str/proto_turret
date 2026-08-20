@@ -3,19 +3,21 @@
 set -e
 
 PROJECT_DIR=$(pwd)
-IMAGE_NAME="microros/micro_ros_static_library_builder:humble"
+IMAGE_NAME="microros/micro_ros_static_library_builder:humble-cached"
 
 echo "=== Полная пересборка библиотеки micro-ROS (с очисткой кеша) ==="
 
-# 1. Удаляем старую библиотеку и кеш colcon
-sudo rm -rfv micro_ros_stm32cubemx_utils/microros_static_library/libmicroros
-sudo rm -rfv micro_ros_stm32cubemx_utils/microros_static_library/library_generation/install
-sudo rm -rfv micro_ros_stm32cubemx_utils/microros_static_library/library_generation/build
-sudo rm -rfv micro_ros_stm32cubemx_utils/microros_static_library/library_generation/log
+# 1. Удаляем старую библиотеку и кеш colcon.
+#    Файлы принадлежат текущему пользователю, sudo не нужен (и без TTY он не
+#    может запросить пароль).
+rm -rfv micro_ros_stm32cubemx_utils/microros_static_library/libmicroros
+rm -rfv micro_ros_stm32cubemx_utils/microros_static_library/library_generation/install
+rm -rfv micro_ros_stm32cubemx_utils/microros_static_library/library_generation/build
+rm -rfv micro_ros_stm32cubemx_utils/microros_static_library/library_generation/log
 
 # 2. Запускаем контейнер и собираем библиотеку из правильной папки
 yes | docker container prune
-docker run -it \
+docker run -i \
   --name micro_ros_builder \
   -v $PROJECT_DIR:/project \
   -w /project \

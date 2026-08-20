@@ -49,4 +49,11 @@ void motor_tilt_steps(uint32_t steps, uint8_t dir);
 // PID
 void motor_pid_init();
 
+// Задать PID-коэффициент/настройку оси по имени в рантайме (для сервиса
+// параметров ROS2). Имена: "pan_kp", "pan_ki", "pan_kd", "pan_smooth",
+// "pan_rate", "pan_corr_max", "pan_speed_max" и зеркально "tilt_*".
+// value — новое значение (kp/ki/kd применяются к структуре PID, остальное —
+// к соответствующим runtime-переменным). Возвращает 1, если имя распознано.
+uint8_t motor_set_pid_param(const char* name, double value);
+
 #endif  // MOTOR_CONTROL_H
